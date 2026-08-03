@@ -1,0 +1,21 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: integrations-node-devkit
+  description: "Local development kit for Revenexx integration node packages — a mock Integrations API for previewing nodes/credentials/templates in the Cockpit UI, plus a unit-testing harness. Dev/CI only, never bundled."
+  annotations:
+    github.com/project-slug: revenexx-integrations/devkit
+    backstage.io/techdocs-ref: url:https://github.com/revenexx-integrations/devkit/tree/main/
+  tags:
+    - typescript
+    - integrations
+    - devkit
+    - testing
+spec:
+  type: library
+  owner: group:default/platform
+  system: revenue-cloud
+  lifecycle: experimental
+  dependsOn:
+    - component:default/integrations-node-sdk
+    - component:default/studio-integrations

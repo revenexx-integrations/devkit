@@ -1,0 +1,94 @@
+# Getting Started
+
+Get a node package rendering in the Cockpit preview.
+
+## Prerequisites
+
+- **Node.js >= 20.3.0**.
+- An integration node package that exports nodes and/or credentials from `src/index.ts`.
+- Access to the private `@revenexx` npm registry (the preview host installs
+  `@revenexx/studio-integrations` and `@revenexx/studio-shared`).
+
+## Install
+
+```bash
+npm install -D @revenexx/integrations-node-devkit
+```
+
+Add a `preview` script to your node package. Leave any existing `dev` script (typically
+`tsup --watch`) untouched:
+
+```json
+{
+  "scripts": {
+    "preview": "integrations-devkit preview"
+  }
+}
+```
+
+Add the devkit's working directory to `.gitignore`:
+
+```
+.revenexx-dev/
+```
+
+## Run the preview
+
+```bash
+npm run preview
+```
+
+On the first run this does four things:
+
+1. Scaffolds a minimal Nuxt host into `.revenexx-dev/preview/`.
+2. Runs `npm install` in it — heavy the first time, as it pulls Nuxt and the studio
+   packages.
+3. Starts the mock Integrations API.
+4. Runs `nuxt dev` wired to that mock.
+
+## Verify it works
+
+Two endpoints should respond:
+
+- Open **<http://localhost:3000/integrations>** — the Cockpit UI, listing the nodes and
+  credentials from your package.
+- Check the mock directly:
+
+  ```bash
+  curl http://localhost:3555/api/v1/health
+  # {"status":"ok"}
+
+  curl http://localhost:3555/api/v1/nodes
+  ```
+
+  The node count must match what your `src/index.ts` exports.
+
+Editing a node or credential in your package hot-reloads it; the console prints
+`↻ Reloaded package (…)`.
+
+## Run without the UI
+
+To iterate against the mock API alone — useful when scripting or debugging:
+
+```bash
+npx integrations-devkit --no-ui
+```
+
+This starts only the mock on `http://localhost:3555/api/v1`, with no Nuxt host and no
+install step.
+
+## Run the tests
+
+The testing harness is a separate entry point and needs no running server:
+
+```bash
+npx vitest
+```
+
+See [Testing Harness](testing.md) for what it provides. `vitest` is an optional peer
+dependency — install it if your package does not already have it.
+
+## Next steps
+
+- Commit fixtures your team shares: [Seeds & Persistence](seeds.md).
+- Look up the remaining commands and flags: [CLI Reference](cli.md).

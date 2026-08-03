@@ -1,0 +1,15 @@
+site_name: integrations-node-devkit
+site_description: "Local development kit for Revenexx integration node packages — a mock Integrations API for previewing nodes/credentials/templates in the Cockpit UI, plus a unit-testing harness. Dev/CI only, never bundled."
+repo_url: https://github.com/revenexx-integrations/devkit
+docs_dir: docs
+
+nav:
+  - Overview: index.md
+  - Getting Started: getting-started.md
+  - CLI Reference: cli.md
+  - Seeds & Persistence: seeds.md
+  - Testing Harness: testing.md
+  - Architecture: architecture.md
+
+plugins:
+  - techdocs-core
