@@ -7,7 +7,9 @@
  *   - `@revenexx/integrations-node-devkit/testing`  → the unit-testing harness
  */
 
-export const DEVKIT_VERSION = '0.1.0';
+// Kept in step with package.json by `scripts/sync-version.mjs`, which the
+// `version` script runs right after `changeset version`. Never edit by hand.
+export const DEVKIT_VERSION = '0.2.0';
 
 export {
   ENV_FILE_MIN_NODE,

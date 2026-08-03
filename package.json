@@ -53,6 +53,8 @@
     "lint": "biome check src tests",
     "format": "biome format --write src tests",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "prepack": "npm run build",
+    "version": "changeset version && node scripts/sync-version.mjs",
     "release": "changeset publish"
   },
   "dependencies": {
