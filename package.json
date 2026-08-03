@@ -1,0 +1,75 @@
+{
+  "name": "@revenexx/integrations-node-devkit",
+  "version": "0.1.0",
+  "description": "Local development kit for Revenexx integration node packages — a mock Integrations API for previewing nodes/credentials/templates in the Cockpit UI, plus a unit-testing harness. Dev/CI only, never bundled.",
+  "license": "MIT",
+  "author": "revenexx GmbH",
+  "keywords": [
+    "revenexx",
+    "integrations",
+    "nodes",
+    "devkit",
+    "testing"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "integrations-devkit": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js",
+      "require": "./dist/testing/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "assets"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check src tests",
+    "format": "biome format --write src tests",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "release": "changeset publish"
+  },
+  "engines": {
+    "node": ">=20.3.0"
+  },
+  "dependencies": {
+    "tsx": "^4.0.0"
+  },
+  "peerDependencies": {
+    "@revenexx/integrations-node-sdk": ">=0.13.0",
+    "vitest": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vitest": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@changesets/cli": "^2.31.0",
+    "@revenexx/integrations-node-sdk": ">=0.13.0",
+    "@types/node": "^24.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^2.1.0"
+  }
+}
