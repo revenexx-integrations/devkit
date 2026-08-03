@@ -22,13 +22,11 @@ access can push to `main` or create a release tag and thereby fire an
 | [`branch-names.json`](../.github/rulesets/branch-names.json) | all branches **except** the allowed prefixes | restricts branch **creation**: only `feature/`, `hotfix/`, `bugfix/`, `chore/`, `release/`, `changeset-release/` (single segment each) and `dependabot/` (any depth) branches may be created (no bypass) |
 | [`release-branches.json`](../.github/rulesets/release-branches.json) | branches `release/*` and `chore/*` | restricts `release/` and `chore/` branch **creation** to **repository admins** (the stand-in for "org members" — see note) |
 
-> ⚠️ **Prerequisite — CI must exist first.** `main.json` requires the status
-> checks `test` and `changeset`. In the SDK those are job names in
-> `.github/workflows/ci.yml`; **this repo has no workflows yet**. Importing
-> `main.json` before CI exists blocks every PR indefinitely (the checks can never
-> report). Order of operations: commit the source → add `ci.yml` (+
-> `publish.yml`) → then import the rulesets. The other three rulesets have no
-> such dependency and can be imported right away.
+The required status checks `test` and `changeset` are job names in
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml). `changeset` fails any
+PR that changes a package without adding a changeset file (it self-skips on the
+`changeset-release/main` PR, whose changesets are already consumed). Use
+`npx changeset --empty` for PRs that intentionally need no release.
 
 ### Branch naming convention
 
@@ -58,9 +56,8 @@ open to any collaborator.
 ## How to apply
 
 1. **Settings → Rules → Rulesets → New ruleset → Import a ruleset**
-2. Upload `.github/rulesets/branch-names.json`, save.
-3. Repeat for `release-branches.json` and `release-tags.json` — and for
-   `main.json` **once CI exists** (see the prerequisite above).
+2. Upload `.github/rulesets/main.json`, save.
+3. Repeat for `release-tags.json`, `branch-names.json` and `release-branches.json`.
    When updating existing rulesets after a change here, edit the live ruleset to
    match — import only creates new ones.
 4. On the **release-tags** ruleset, confirm the **Bypass list** contains
@@ -77,6 +74,48 @@ The repo is **public**, so rulesets are **active and enforced** (ruleset
 enforcement needs GitHub Team/Enterprise *or* a public repo). Keep these files in
 sync with the live rulesets — they remain the source of truth and the import
 sources for the UI.
+
+## Release GitHub App
+
+[`publish.yml`](../.github/workflows/publish.yml) mints a token from a dedicated
+**GitHub App** via `actions/create-github-app-token` and runs `changesets/action`
+with it, not the default `GITHUB_TOKEN`. Three reasons:
+
+1. **Checks must run on the “Version Packages” PR.** PRs created by the default
+   `GITHUB_TOKEN` do not trigger further workflows, so `test`/`changeset` would
+   never run there and the PR could never satisfy the required checks.
+2. **Tag creation must pass the release-tag ruleset.** `GITHUB_TOKEN` cannot be a
+   bypass actor; the App is an `Integration` bypass actor in `release-tags.json`.
+3. **No self-approval clash.** The App is a distinct identity (`app[bot]`), so a
+   human maintainer can approve the bot's PR.
+
+**Required repo secrets** — these are the exact names the workflow reads:
+
+| Secret | Used by |
+| --- | --- |
+| `APP_CLIENT_ID` | `create-github-app-token`'s `client-id` input |
+| `APP_PRIVATE_KEY` | the App's generated private key |
+
+> ⚠️ The workflow authenticates by **client id**, not App id — a secret named
+> `APP_ID` is **not read** by `publish.yml`. The header comment inside
+> `publish.yml` still says “secrets.APP_ID / APP_PRIVATE_KEY”; that comment is
+> stale (inherited from the SDK), the code below it is authoritative. Watch the
+> spelling: `APP_CLIENT_ID`, not `APP_CLIEND_ID` — a typo'd secret resolves to an
+> empty string and the release job fails at the first step.
+
+**Setup:** create an org-owned GitHub App with **Repository permissions →
+Contents: Read and write** + **Pull requests: Read and write**; no webhook, no
+callback URL. Generate a private key, install the App on this repo, store the two
+secrets above, then add the App to the **release-tags** ruleset bypass list by
+name (GitHub resolves its ID; the committed JSON carries a placeholder
+`actor_id: 0`).
+
+**npm publishing** uses OIDC **trusted publishing** (`id-token: write` + npm
+≥ 11.5.1), so no `NPM_TOKEN` is needed — but the binding on npmjs.com is keyed to
+this repo **plus the workflow filename**. That is why the file stays
+`publish.yml`, and why the trusted publisher must be configured on the
+`@revenexx/integrations-node-devkit` package settings before the first automated
+release.
 
 ## Dependabot
 
