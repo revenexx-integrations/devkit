@@ -1,0 +1,62 @@
+name: Release
+
+# The filename stays "publish.yml" on purpose: the npmjs trusted-publisher (OIDC)
+# binding is keyed to this repo + workflow *filename*. Renaming the file would
+# require reconfiguring the trusted publisher on npmjs.com, so we keep the path
+# even though the workflow now also opens the "Version Packages" PR.
+#
+# This is the recommended Changesets flow:
+#   - push to main with pending changesets  -> open/update the "Version Packages" PR
+#   - "Version Packages" PR merged (no changesets left) -> changeset publish (npm + tag)
+#
+# It runs under a GitHub App token (minted from secrets.APP_ID / APP_PRIVATE_KEY),
+# not the default GITHUB_TOKEN, because (a) PRs opened by GITHUB_TOKEN do not trigger
+# the required `test`/`changeset` checks (the "Version Packages" PR would be
+# unmergeable); and (b) the App is a bypass actor on the release-tags ruleset, so it
+# may push the protected release tag. The App is a distinct identity (app[bot]), so a
+# human maintainer can approve the bot's "Version Packages" PR (no self-approval clash).
+
+on:
+  push:
+    branches: [main]
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+permissions:
+  contents: write # push the version branch + release tag
+  pull-requests: write # open/update the "Version Packages" PR
+  id-token: write # OIDC trusted publishing — no NPM_TOKEN needed
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm install -g npm@^11.5.1 # OIDC needs npm >= 11.5.1
+
+      - run: npm ci
+
+      # Versioning ("changeset version") runs by default; publishing happens only
+      # once the "Version Packages" PR is merged and no changesets remain.
+      - name: Create release PR or publish
+        uses: changesets/action@v1
+        with:
+          publish: npm run release
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
