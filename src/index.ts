@@ -9,6 +9,14 @@
 
 export const DEVKIT_VERSION = '0.1.0';
 
+export {
+  ENV_FILE_MIN_NODE,
+  type EnvFileChoice,
+  loadEnvFile,
+  type LoadEnvFileOptions,
+  nodeOwnedEnvFlag,
+  resolveEnvFile,
+} from './env.js';
 export { DevApiError } from './errors.js';
 export {
   ensureTsxRegistered,

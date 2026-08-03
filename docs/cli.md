@@ -25,6 +25,8 @@ package — all relative defaults resolve against the current working directory.
 | `--ui <dir>` | resolve the UI package | Serve a prebuilt static UI from this directory. |
 | `--no-ui` | off | Run API-only. |
 | `--open` | off | Open the preview in a browser. |
+| `--env <path>` | `.env` when present | Env file to load before seeds are applied. Needs Node >= 20.12. |
+| `--no-env` | off | Load no env file at all. |
 | `--dir <path>` | `.revenexx-dev/preview` | Preview host directory. Applies to `preview` and `init-preview`. |
 | `--force` | off | Overwrite existing scaffold files. Applies to `preview` and `init-preview`. |
 
@@ -53,6 +55,18 @@ Throw away the interactive session state and start from the committed seeds agai
 ```bash
 npx integrations-devkit reset
 ```
+
+Load a different env file for the seeds' `${VAR}` references — or none at all:
+
+```bash
+npx integrations-devkit preview --env .env.staging
+npx integrations-devkit preview --no-env
+```
+
+> The flag is `--env`, **not** `--env-file`. Node reserves `--env-file` and
+> `--env-file-if-exists` and acts on them wherever they appear — even after the script
+> path — so `--env-file missing.env` fails inside Node (exit code 9) before the devkit
+> starts. Passing one is not an error, but the devkit will point you at `--env`.
 
 Scaffold the host into a directory outside the package — useful to keep the package's
 own git tree untouched:

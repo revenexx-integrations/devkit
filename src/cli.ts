@@ -18,6 +18,8 @@
  *   --ui <dir>       static UI build dir to serve (default: resolve the UI package)
  *   --no-ui          run API-only, do not serve a UI
  *   --open           open the preview in a browser
+ *   --env <path>     env file to load (default: .env when present)
+ *   --no-env         do not load any env file
  */
 
 import { existsSync, readdirSync, readFileSync, watch } from 'node:fs';
@@ -26,6 +28,7 @@ import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadEnvFile } from './env.js';
 import { DEVKIT_VERSION } from './index.js';
 import { type LoadedPackage, loadPackageFromEntry } from './loader.js';
 import { applySeeds, loadSeedsFromDir, loadState, saveState } from './persistence.js';
@@ -105,11 +108,27 @@ function parseArgs(argv: string[]): { command: string | null; options: CliOption
       case '--open':
         opts.open = true;
         break;
+      // Both are consumed by loadEnvFile() before parsing; listed here so they
+      // do not fall through to the unknown-option branch.
+      case '--env':
+        i++;
+        break;
+      case '--no-env':
+        break;
       case '--version':
       case '-v':
         command = 'version';
         break;
       default:
+        // Node acts on `--env-file[-if-exists]` itself but still forwards it
+        // here, so accept and skip it rather than rejecting the user's input.
+        // loadEnvFile() has already pointed them at `--env`.
+        if (arg?.startsWith('--env-file')) {
+          if (!arg.includes('=')) {
+            i++;
+          }
+          break;
+        }
         if (arg?.startsWith('-')) {
           console.error(`Unknown option: ${arg}`);
           process.exit(1);
@@ -375,10 +394,17 @@ async function openBrowser(url: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const { command, options } = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  // Before parseArgs: it reads `PORT`, and seeds interpolate `${VAR}` from the
+  // environment once the mock starts.
+  const envFile = loadEnvFile(argv);
+  const { command, options } = parseArgs(argv);
   if (command === 'version') {
     console.log(DEVKIT_VERSION);
     return;
+  }
+  if (envFile) {
+    console.log(`Loaded env from ${envFile}`);
   }
   if (command === 'reset') {
     const { rmSync } = await import('node:fs');
