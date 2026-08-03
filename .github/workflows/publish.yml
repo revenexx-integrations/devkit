@@ -52,11 +52,15 @@ jobs:
 
       - run: npm ci
 
-      # Versioning ("changeset version") runs by default; publishing happens only
+      # `version` must be the npm script, not the action's default
+      # "changeset version": the version is also a source constant
+      # (DEVKIT_VERSION in src/index.ts, backing `--version` and exported
+      # publicly), and only the npm script syncs it. Publishing happens only
       # once the "Version Packages" PR is merged and no changesets remain.
       - name: Create release PR or publish
         uses: changesets/action@v1
         with:
+          version: npm run version
           publish: npm run release
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
