@@ -7,7 +7,7 @@
  *   - `@revenexx/integrations-node-devkit/testing`  → the unit-testing harness
  */
 
-export const DEVKIT_VERSION = '0.1.0';
+export const DEVKIT_VERSION = '0.2.0';
 
 export {
   ENV_FILE_MIN_NODE,
