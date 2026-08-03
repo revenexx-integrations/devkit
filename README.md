@@ -99,8 +99,9 @@ Pass `--ui <dir>` to `integrations-devkit` if you instead have a prebuilt static
 Three layers, base to top:
 
 1. **Committed seeds** in `dev/seeds/` — stable instances checked into the repo.
-   Reference sensitive values via `${ENV_VAR}` (resolved from `.env`; only the
-   reference is committed, never the value):
+   Reference sensitive values via `${ENV_VAR}` (resolved from the environment,
+   with a `.env` in the package root loaded automatically; only the reference is
+   committed, never the value):
 
    ```ts
    // dev/seeds/index.ts
