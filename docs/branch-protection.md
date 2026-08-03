@@ -17,7 +17,7 @@ access can push to `main` or create a release tag and thereby fire an
 
 | File | Target | What it enforces |
 | --- | --- | --- |
-| [`main.json`](../.github/rulesets/main.json) | default branch (`main`) | PR required (1 approval, dismiss stale, resolve conversations, squash/rebase only), required status checks `test` + `changeset` + up-to-date, linear history, no force-push, no deletion |
+| [`main.json`](../.github/rulesets/main.json) | default branch (`main`) | PR required (1 approval, dismiss stale, resolve conversations, squash/rebase only), required status checks `test` + `changeset` + up-to-date, linear history, no force-push, no deletion — **org admins may bypass via PR**, see below |
 | [`release-tags.json`](../.github/rulesets/release-tags.json) | tags `@revenexx/integrations-node-devkit@*` | only **bypass actors** may create/update/delete release tags → protects the publish trigger (Repository admin **and** the release GitHub App are bypass actors) |
 | [`branch-names.json`](../.github/rulesets/branch-names.json) | all branches **except** the allowed prefixes | restricts branch **creation**: only `feature/`, `hotfix/`, `bugfix/`, `chore/`, `release/`, `changeset-release/` (single segment each) and `dependabot/` (any depth) branches may be created (no bypass) |
 | [`release-branches.json`](../.github/rulesets/release-branches.json) | branches `release/*` and `chore/*` | restricts `release/` and `chore/` branch **creation** to **repository admins** (the stand-in for "org members" — see note) |
@@ -27,6 +27,37 @@ The required status checks `test` and `changeset` are job names in
 PR that changes a package without adding a changeset file (it self-skips on the
 `changeset-release/main` PR, whose changesets are already consumed). Use
 `npx changeset --empty` for PRs that intentionally need no release.
+
+### The org-admin bypass on `main`
+
+GitHub does not let you approve your own pull request, so a `main` ruleset with
+**no** bypass actors makes a single available maintainer unable to land anything —
+the failure mode when everyone else is on holiday. `main.json` therefore lists one
+bypass actor:
+
+```json
+{ "actor_id": 1, "actor_type": "OrganizationAdmin", "bypass_mode": "pull_request" }
+```
+
+Two deliberate choices:
+
+- **`OrganizationAdmin`, not `RepositoryRole` id 5.** Every collaborator in this org
+  currently holds the repo **admin** role (see the caveat below), so a
+  `RepositoryRole: 5` bypass would effectively exempt everyone. Org owners are the
+  narrower set.
+- **`bypass_mode: "pull_request"`, not `"always"`.** The bypass applies only to
+  changes that go through a pull request; **direct pushes to `main` stay blocked**
+  for everyone, so the accident guard survives.
+
+> ⚠️ A ruleset bypass is **per actor, not per rule** — GitHub cannot exempt only
+> the approval requirement. An org owner merging with the bypass also skips the
+> `test` + `changeset` checks and the conversation-resolution rule. Treat it as a
+> break-glass: normally wait for a review, and when you do use it, check CI is
+> green by eye first. To remove it, set `bypass_actors` back to `[]` and re-apply.
+
+Note this diverges from `integrations-node-sdk`, which keeps `bypass_actors: []` on
+`main`. GitHub reports the applied actor as `"actor_id": null` for
+`OrganizationAdmin` — an inert normalisation, not a drift from this file.
 
 ### Branch naming convention
 
