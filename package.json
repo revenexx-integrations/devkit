@@ -16,7 +16,7 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "integrations-devkit": "./dist/cli.js"
+    "integrations-devkit": "dist/cli.js"
   },
   "exports": {
     ".": {
