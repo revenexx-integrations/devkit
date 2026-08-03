@@ -1,0 +1,41 @@
+version: 2
+
+# Wie im SDK ist keine `registries:`-Sektion (und kein NPM_GH_TOKEN-Secret)
+# nötig: devkits *eigene* Dependencies kommen alle aus der public npm-Registry
+# — `tsx` (production) sowie die Peers `@revenexx/integrations-node-sdk` und
+# `vitest`.
+#
+# ACHTUNG: die privaten `@revenexx/studio-*`-Pins leben in
+# `src/preview/templates.ts` (die generierte package.json des Nuxt-Preview-Hosts)
+# und stehen NICHT in dieser package.json. Dependabot sieht sie deshalb nicht
+# und bumpt sie nicht — der Studio-Peer-Satz muss weiterhin manuell nachgezogen
+# werden.
+
+updates:
+  # npm-Dependencies (production: tsx, dazu die devDependencies)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore"
+      prefix-development: "chore"
+    open-pull-requests-limit: 5
+    groups:
+      # devDependencies gebündelt
+      dev-dependencies:
+        dependency-type: "development"
+      # Produktiv-Deps: minor/patch zusammen, major bleibt einzeln
+      production-minor-patch:
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub-Actions aktuell halten (wie im integrations-Repo)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
