@@ -106,9 +106,11 @@ with it, not the default `GITHUB_TOKEN`. Three reasons:
 **Setup:** create an org-owned GitHub App with **Repository permissions →
 Contents: Read and write** + **Pull requests: Read and write**; no webhook, no
 callback URL. Generate a private key, install the App on this repo, store the two
-secrets above, then add the App to the **release-tags** ruleset bypass list by
-name (GitHub resolves its ID; the committed JSON carries a placeholder
-`actor_id: 0`).
+secrets above. The App is already wired into the **release-tags** bypass list:
+`release-tags.json` carries `actor_id: 4132857` (`revenexx-integrations-release`,
+the same App the SDK uses), so no manual UI step is needed — but the App must be
+**installed on this repository** (it is installed org-wide with
+`repository_selection: selected`, so check Settings → GitHub Apps).
 
 **npm publishing** uses OIDC **trusted publishing** (`id-token: write` + npm
 ≥ 11.5.1), so no `NPM_TOKEN` is needed — but the binding on npmjs.com is keyed to
