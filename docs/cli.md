@@ -25,8 +25,8 @@ package — all relative defaults resolve against the current working directory.
 | `--ui <dir>` | resolve the UI package | Serve a prebuilt static UI from this directory. |
 | `--no-ui` | off | Run API-only. |
 | `--open` | off | Open the preview in a browser. |
-| `--env <path>` | `.env` when present | Env file to load before seeds are applied. Needs Node >= 20.12. |
-| `--no-env` | off | Load no env file at all. |
+| `--env <path>` | `.env` when present | Env file to load before seeds are applied, *instead of* `.env`. Needs Node >= 20.12. |
+| `--no-env` | off | Load no env file at all, not even `.env`. |
 | `--dir <path>` | `.revenexx-dev/preview` | Preview host directory. Applies to `preview` and `init-preview`. |
 | `--force` | off | Overwrite existing scaffold files. Applies to `preview` and `init-preview`. |
 
@@ -62,6 +62,14 @@ Load a different env file for the seeds' `${VAR}` references — or none at all:
 npx integrations-devkit preview --env .env.staging
 npx integrations-devkit preview --no-env
 ```
+
+A `.env` in the package root is loaded automatically when present, and `--env` **replaces**
+it: exactly one env file is ever read. Repeat the flag and the last one wins. A shell
+variable beats the file either way, since `process.loadEnvFile` never overwrites what is
+already set.
+
+The value is a **path**, not an environment name — `--env .env.staging`, not `--env
+staging`. If you pass a bare name and the matching `.env.<name>` exists, the error says so.
 
 > The flag is `--env`, **not** `--env-file`. Node reserves `--env-file` and
 > `--env-file-if-exists` and acts on them wherever they appear — even after the script
