@@ -1,6 +1,6 @@
 {
   "name": "@revenexx/integrations-node-devkit",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Local development kit for Revenexx integration node packages — a mock Integrations API for previewing nodes/credentials/templates in the Cockpit UI, plus a unit-testing harness. Dev/CI only, never bundled.",
   "keywords": [
     "revenexx",
