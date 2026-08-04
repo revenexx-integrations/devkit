@@ -18,7 +18,7 @@
  *   --ui <dir>       static UI build dir to serve (default: resolve the UI package)
  *   --no-ui          run API-only, do not serve a UI
  *   --open           open the preview in a browser
- *   --env <path>     env file to load (default: .env when present)
+ *   --env <path>     env file to load *instead of* .env (default: .env when present)
  *   --no-env         do not load any env file
  */
 
@@ -109,7 +109,8 @@ function parseArgs(argv: string[]): { command: string | null; options: CliOption
         opts.open = true;
         break;
       // Both are consumed by loadEnvFile() before parsing; listed here so they
-      // do not fall through to the unknown-option branch.
+      // do not fall through to the unknown-option branch. A repeated `--env`
+      // resolves to the last one, so each occurrence skips its own value.
       case '--env':
         i++;
         break;

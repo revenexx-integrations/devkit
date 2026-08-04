@@ -49,10 +49,19 @@ the shell always wins over the file:
 MY_API_KEY=other npm run preview
 ```
 
-Use `--env <path>` for a different file, or `--no-env` to load none. A missing `.env` is
-fine; a missing file you named explicitly is an error, so a typo does not turn into a
-confusing seed failure later. (It is `--env`, not `--env-file` — that one belongs to Node
-itself; see the [CLI Reference](cli.md).)
+`--env <path>` loads that file **instead of** `.env` — exactly one env file is ever read,
+so the named file is the whole picture rather than a patch on top of the default:
+
+```bash
+# .env is not read at all here
+npx integrations-devkit preview --env .env.staging
+```
+
+Pass it more than once and the last one wins, as with the CLI's other options. `--no-env`
+loads nothing at all. A missing `.env` is fine; a missing file you named explicitly is an
+error — there is no silent fallback to `.env` — so a typo does not turn into a confusing
+seed failure later. (It is `--env`, not `--env-file` — that one belongs to Node itself; see
+the [CLI Reference](cli.md).)
 
 > **A referenced variable that is not set anywhere is an error** — `interpolateEnv`
 > throws rather than seeding an empty value, since a silently blank credential is worse
