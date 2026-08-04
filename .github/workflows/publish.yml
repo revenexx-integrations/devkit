@@ -53,18 +53,16 @@ jobs:
       - run: npm ci
 
       # `files` is ["dist", "assets"], so an unbuilt tree publishes a tarball with
-      # no dist at all — which is exactly how 0.2.0 shipped. The `prepack` script
-      # is the real guard (it also covers a local `npm pack`); this step is the
-      # belt-and-braces so a broken publish fails here instead of on npm.
+      # no dist at all — which is exactly how 0.2.0 shipped. The `prepublishOnly`
+      # script is the real guard (it runs inside `changeset publish`); this step
+      # surfaces a broken build here rather than mid-publish.
       - run: npm run build
 
-      # Versioning ("npm run version" = changeset version + DEVKIT_VERSION sync)
-      # runs by default; publishing happens only once the "Version Packages" PR is
-      # merged and no changesets remain.
+      # Versioning ("changeset version") runs by default; publishing happens only
+      # once the "Version Packages" PR is merged and no changesets remain.
       - name: Create release PR or publish
         uses: changesets/action@v1
         with:
-          version: npm run version
           publish: npm run release
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}

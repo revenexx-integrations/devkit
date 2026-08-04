@@ -7,9 +7,14 @@
  *   - `@revenexx/integrations-node-devkit/testing`  → the unit-testing harness
  */
 
-// Kept in step with package.json by `scripts/sync-version.mjs`, which the
-// `version` script runs right after `changeset version`. Never edit by hand.
-export const DEVKIT_VERSION = '0.2.0';
+import { readFileSync } from 'node:fs';
+
+// Read from package.json rather than hardcoded, so the released version can
+// never drift from what `integrations-devkit --version` prints. `../` resolves
+// to the package root from both `src/` and the bundled `dist/`. The CJS build
+// needs tsup's `shims: true` for `import.meta.url`.
+const manifestUrl = new URL('../package.json', import.meta.url);
+export const DEVKIT_VERSION: string = JSON.parse(readFileSync(manifestUrl, 'utf8')).version;
 
 export {
   ENV_FILE_MIN_NODE,
