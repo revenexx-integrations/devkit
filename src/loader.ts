@@ -106,6 +106,26 @@ export async function ensureTsxRegistered(): Promise<void> {
   tsxRegistered = true;
 }
 
+/**
+ * File extensions whose change should reload the package.
+ *
+ * `[cm]?[jt]sx?` covers the whole matrix — `.ts .tsx .cts .mts .js .jsx .cjs .mjs`
+ * — rather than the `.ts`-family-plus-bare-`.js` it used to be. That older pattern
+ * silently ignored `.mjs` and `.cjs`, so a package whose entry is a built ESM
+ * `dist/index.mjs` never hot-reloaded at all: edits landed, nothing happened, and
+ * nothing said why.
+ *
+ * `.json` is in because a node that imports locale strings or lookup data from one
+ * has to re-evaluate when it changes. A reload it did not need costs a few ms and
+ * keeps the previous package on failure, so erring towards reloading is free.
+ */
+const RELOADABLE_SOURCE = /\.(?:[cm]?[jt]sx?|json)$/;
+
+/** True when a changed file is package source the mock should reload for. */
+export function isReloadableSource(file: string): boolean {
+  return RELOADABLE_SOURCE.test(file);
+}
+
 /** Imports a module by path, registering tsx first for TypeScript sources. */
 export async function importFresh<T = unknown>(entryPath: string): Promise<T> {
   if (/\.[cm]?tsx?$/.test(entryPath)) {

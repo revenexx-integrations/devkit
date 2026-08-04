@@ -128,7 +128,10 @@ function handleSchemas(res: http.ServerResponse, deps: DevServerDeps, seg: strin
     return void sendJson(res, 200, { domain, versions });
   }
 
-  const schema = schemas[`${domain}/${version}`] ?? (schemas[domain] as unknown);
+  // Exact match only. Falling back to the bare-domain (latest) entry would answer
+  // 200 for EVERY version string — a node author asking for a version that does not
+  // exist would be handed the latest schema and told it was the one they asked for.
+  const schema = schemas[`${domain}/${version}`];
   if (!schema) {
     throw new DevApiError(404, `Unknown schema version '${domain}/${version}'. Vendor it into assets/schemas.`);
   }

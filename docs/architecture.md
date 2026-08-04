@@ -87,7 +87,23 @@ host voids it. If you do want to change it, take an explicit unmanaged copy:
 integrations-devkit init-preview --dir ./my-preview
 ```
 
-That copy is never updated by devkit upgrades, and `preview --dir ./my-preview` runs it.
+That copy is never updated by devkit upgrades, and `preview --dir ./my-preview` runs it. Its
+generated `.env` is written once and then left alone, unlike the managed one which is
+refreshed every run.
+
+What is shared and what is not is a deliberate split: the ~500 MB dependency tree is shared
+(that is the whole point), the compiled app is not. `preview` points each consumer repo at
+its own `.nuxt-<hash-of-cwd>/` inside the host directory via `DEVKIT_NUXT_BUILD_DIR`, so
+previewing two node packages simultaneously does not have them building over one another.
+
+Two structural guards keep the directory honest, both of the same shape — a marker file
+recording that a step *finished*, because "the output looks present" cannot tell a completed
+step from an interrupted one:
+
+- `.devkit-copy-complete` — written after the file copy. Without it, an interrupted copy that
+  happened to land `package.json` and `nuxt.config.ts` would count as a host forever.
+- `.devkit-install-complete` — written after a successful `npm install`, holding a fingerprint
+  of the dependency blocks it installed. Changed pins therefore reinstall.
 
 ## Fidelity caveats
 

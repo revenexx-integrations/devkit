@@ -44,6 +44,14 @@ and an upgrade can never leave you on a stale host — a new version is simply a
 directory. Old directories are not pruned automatically; delete them when you want the
 disk back.
 
+The dependency install is shared, the **build is not**: each repo compiles into its own
+`.nuxt-<hash>/` inside that directory, so two packages can be previewed at the same time
+without building over each other.
+
+For an unmanaged copy (`--dir`), the generated `.env` is written once and then left alone —
+it is yours to edit. `preview` passes the same values to Nuxt on every run regardless, so
+editing it only affects a manual `npm run dev` in that directory.
+
 ## Common invocations
 
 Preview a package whose entry is not the default:

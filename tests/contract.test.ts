@@ -303,6 +303,42 @@ function typeMatches(schemaType: string | string[] | undefined, value: unknown):
 }
 
 /**
+ * The three allowlists below are keyed by PROPERTY PATH, not by property name.
+ *
+ * That distinction is the difference between a net and a sieve: `name`, `id`,
+ * `config` and `description` occur all over these responses, so excusing them by
+ * bare name switches the check off for most of the payload — including places
+ * where a drift would be exactly the kind the suite exists to catch.
+ *
+ *   `data[0].icon`  — that path and no other
+ *   `**.blob`       — that property at any depth, when it genuinely is free-form
+ *                     wherever it appears
+ *
+ * `allowlisted()` records which entries fire, and "every allowlist entry is still
+ * needed" below fails on any that no longer do, so the lists cannot quietly widen
+ * past what the mock actually requires.
+ */
+function matchesPath(pattern: string, path: string): boolean {
+  if (pattern.startsWith('**.')) {
+    const tail = pattern.slice(3);
+    return path === tail || path.endsWith(`.${tail}`);
+  }
+  return pattern === path;
+}
+
+const firedAllowlistEntries = new Set<string>();
+
+function allowlisted(list: Record<string, string>, listName: string, path: string): boolean {
+  for (const pattern of Object.keys(list)) {
+    if (matchesPath(pattern, path)) {
+      firedAllowlistEntries.add(`${listName} ${pattern}`);
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Property paths whose contents are the node author's, not the contract's.
  *
  * Scribe infers a schema from the `@response` example, so a free-form JSON payload
@@ -310,16 +346,16 @@ function typeMatches(schemaType: string | string[] | undefined, value: unknown):
  * `execute:test`'s `outputs` gains `{ customer: { id } }` from an example about a
  * customer node. Descending into these would assert somebody else's example data.
  */
-const FREE_FORM_PATHS = new Set([
-  'outputs', // execute:test — whatever the node returns
-  'blob', // workflow graph
-  'manifest', // node manifest, validated by the schema endpoints instead
-  'config', // trigger/credential config, per type
-  'public_config', // masked credential config, per type
-  'claims', // token claims
-  'definition', // template blob
-  'schema', // the vendored JSON schema itself
-]);
+const FREE_FORM_PATHS: Record<string, string> = {
+  outputs: 'execute:test — whatever the node returns',
+  '**.blob': 'workflow graph',
+  '**.manifest': 'node manifest, validated by the schema endpoints instead',
+  '**.config': 'trigger/credential config, per type',
+  '**.public_config': 'masked credential config, per type',
+  claims: 'token claims',
+  'data.definition': 'template blob',
+  schema: 'the vendored JSON schema itself',
+};
 
 /**
  * Type mismatches the SPEC gets wrong, not the mock — with the reason. Scribe
@@ -332,11 +368,15 @@ const FREE_FORM_PATHS = new Set([
  */
 const SPEC_TYPE_TOO_NARROW: Record<string, string> = {
   name: 'LocalizedString in the SDK; the spec example shows a single language',
-  description: 'LocalizedString',
-  shortDescription: 'LocalizedString',
-  icon: 'LocalizedString',
-  label: 'LocalizedString',
+  'data[0].name': 'LocalizedString',
+  'data.icon': 'LocalizedString',
+  'data[0].icon': 'LocalizedString',
+  'data.description': 'LocalizedString',
+  'data[0].description': 'LocalizedString',
+  'data.shortDescription': 'LocalizedString',
+  'data[0].shortDescription': 'LocalizedString',
   id: 'the mock issues uuid/string ids; seeds document stable string ids (README)',
+  'data[0].id': 'same as `id`',
   credential_id: 'same as `id` — the mock keys credentials by uuid, not integer',
 };
 
@@ -366,22 +406,25 @@ function missingDeclaredProps(schema: JsonSchema | undefined, value: unknown, pa
     const here = path ? `${path}.${name}` : name;
     const actual = (value as Record<string, unknown>)[name];
     if (actual === undefined) {
-      if (!(name in CONDITIONALLY_PRESENT)) {
+      if (!allowlisted(CONDITIONALLY_PRESENT, 'CONDITIONALLY_PRESENT', here)) {
         problems.push(`missing \`${here}\``);
       }
       continue;
     }
-    if (!typeMatches(sub.type, actual) && !(name in SPEC_TYPE_TOO_NARROW)) {
+    if (!typeMatches(sub.type, actual) && !allowlisted(SPEC_TYPE_TOO_NARROW, 'SPEC_TYPE_TOO_NARROW', here)) {
       problems.push(`\`${here}\` should be ${JSON.stringify(sub.type)}, got ${Array.isArray(actual) ? 'array' : typeof actual}`);
       continue;
     }
-    if (FREE_FORM_PATHS.has(name)) {
+    if (allowlisted(FREE_FORM_PATHS, 'FREE_FORM_PATHS', here)) {
       continue;
     }
+    // Union types (`['object','null']`) are normal in this spec, so match on
+    // membership — testing `sub.type === 'object'` would skip the descent silently.
+    const types = Array.isArray(sub.type) ? sub.type : [sub.type];
     // One level into arrays is enough to catch renamed item fields.
-    if (sub.type === 'array' && Array.isArray(actual) && actual.length > 0) {
+    if (types.includes('array') && Array.isArray(actual) && actual.length > 0) {
       problems.push(...missingDeclaredProps(sub.items, actual[0], `${here}[0]`));
-    } else if (sub.type === 'object') {
+    } else if (types.includes('object')) {
       problems.push(...missingDeclaredProps(sub, actual, here));
     }
   }
@@ -417,10 +460,23 @@ describe('vendored contract snapshot', () => {
     expect(res.headers.get('x-api-version')).toBe(API_VERSION);
   });
 
-  it('has no allowlist entry for a path the spec dropped', () => {
+  it('has no INTENTIONALLY_NOT_MOCKED entry for a path the spec dropped', () => {
     const known = new Set(operations.map(o => o.key));
-    const stale = [...Object.keys(INTENTIONALLY_NOT_MOCKED), ...Object.keys(DEVKIT_ONLY)].filter(key => !known.has(key) && !(key in DEVKIT_ONLY));
+    const stale = Object.keys(INTENTIONALLY_NOT_MOCKED).filter(key => !known.has(key));
     expect(stale, 'allowlist entries for endpoints the contract no longer has').toEqual([]);
+  });
+
+  /**
+   * The invariant that makes DEVKIT_ONLY worth keeping: these are routes the mock
+   * invents, so the day the service adopts one, the entry is a lie and the endpoint
+   * belongs in the normal set. (The previous version of this check spread
+   * DEVKIT_ONLY into the stale list and then filtered every one of them back out,
+   * so it asserted nothing about them at all.)
+   */
+  it('has no DEVKIT_ONLY entry the service has since adopted', () => {
+    const known = new Set(operations.map(o => o.key));
+    const adopted = Object.keys(DEVKIT_ONLY).filter(key => known.has(key));
+    expect(adopted, 'listed as devkit-only but present in the contract — drop the entry and treat it as a real endpoint').toEqual([]);
   });
 });
 
@@ -447,4 +503,22 @@ describe('every contract endpoint is either mocked or explicitly excluded', () =
       expect(problems, `${key} response does not match the contract: ${problems.join('; ')}`).toEqual([]);
     });
   }
+});
+
+/**
+ * Runs last on purpose: it can only judge the allowlists once every endpoint has
+ * been requested. An entry that no longer fires means the mock or the spec moved
+ * and the exemption is now dead weight — the sort of thing that accumulates until
+ * nobody can tell which exemptions are still load-bearing.
+ */
+describe('property allowlists', () => {
+  it('has no entry that is no longer needed', () => {
+    const declared = [
+      ...Object.keys(FREE_FORM_PATHS).map(p => `FREE_FORM_PATHS ${p}`),
+      ...Object.keys(SPEC_TYPE_TOO_NARROW).map(p => `SPEC_TYPE_TOO_NARROW ${p}`),
+      ...Object.keys(CONDITIONALLY_PRESENT).map(p => `CONDITIONALLY_PRESENT ${p}`),
+    ];
+    const unused = declared.filter(entry => !firedAllowlistEntries.has(entry));
+    expect(unused, 'allowlist entries that never fired — delete them, or fix the path if it stopped matching').toEqual([]);
+  });
 });

@@ -64,3 +64,14 @@ New endpoints:
 Note that `POST /nodes/{slug}/{version}/config:validate` is a **devkit-only** endpoint —
 it does not exist in the real API. It is listed in the test's `DEVKIT_ONLY` and called out
 in the docs; do not write node code that depends on it.
+
+Two things about the shared host that follow from sharing it:
+
+- The dependency install is shared, the **build is not**. Each repo compiles into its own
+  `.nuxt-<hash>/` inside the host directory, so two node packages can be previewed at the
+  same time.
+- An unmanaged `--dir` copy keeps its `.env` once written — that copy is yours. The managed
+  one is refreshed every run, because its API URL follows `--port`.
+
+`GET /schemas/{domain}/{version}` now 404s an unknown version instead of falling back to
+the latest schema, which had it answering 200 for any version string at all.

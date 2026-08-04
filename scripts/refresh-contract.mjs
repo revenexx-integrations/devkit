@@ -14,7 +14,7 @@
  *     Deliberately NOT in package.json `files`: it is a test-time artifact, and
  *     357 KB has no business in the published tarball. The one runtime value it
  *     implies — the API version the mock reports — is the API_VERSION constant in
- *     src/server.ts, which tests/contract.test.ts asserts against this snapshot.
+ *     src/http.ts, which tests/contract.test.ts asserts against this snapshot.
  *
  *   assets/schemas/<domain>-<version>.json
  *     The JSON schemas the mock serves at GET /schemas/{domain}/{version}.
@@ -105,6 +105,7 @@ async function refreshSchemas(base) {
     // serves the schema itself, so store the inner document.
     const schema = body?.schema ?? body;
     const target = join(REPO, 'assets/schemas', `${domain}-${version}.json`);
+    mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, `${JSON.stringify(schema, null, 2)}\n`, 'utf-8');
     console.log(`schemas   ${domain}/${version} → assets/schemas/${domain}-${version}.json`);
     written += 1;

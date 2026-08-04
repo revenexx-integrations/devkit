@@ -41,11 +41,18 @@ export class PlaygroundNode implements INode {
    * Echoes what it was given and logs once, so `POST …/execute:test` has an
    * observable `outputs` / `branch` / `logs` triple to assert against. Throws on
    * `{ boom: true }` so the failure path can be tested too.
+   *
+   * `{ hang: true }` stalls forever and deliberately never consults `ctx.signal` —
+   * that is the case an abort-only timeout cannot rescue, and the reason the
+   * timeout is enforced by racing.
    */
   async execute(ctx: INodeContext, inputs: Record<string, unknown>): Promise<INodeResult> {
     ctx.logger.info('executing playground', { keys: Object.keys(inputs) });
     if (inputs.boom) {
       throw new Error('boom');
+    }
+    if (inputs.hang) {
+      await new Promise(() => {});
     }
     return { outputs: { echoed: inputs }, branch: 'matched' };
   }

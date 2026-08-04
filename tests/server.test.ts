@@ -65,6 +65,43 @@ describe('nodes catalogue', () => {
   });
 });
 
+describe('execute:test (runs the real execute in-process)', () => {
+  it('returns the outputs, branch and collected logs', async () => {
+    const { status, body } = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      config: { category: 'orders' },
+      inputs: { extra: 1 },
+    });
+    expect(status).toBe(200);
+    // inputs are merged OVER config, per the contract's wording.
+    expect(body).toMatchObject({ outputs: { echoed: { category: 'orders', extra: 1 } }, branch: 'matched' });
+    expect(body.logs).toEqual([{ level: 'info', message: 'executing playground', meta: { keys: ['category', 'extra'] } }]);
+  });
+
+  it('reports a throwing node as 502 with the logs it managed to emit', async () => {
+    const { status, body } = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', { inputs: { boom: true } });
+    expect(status).toBe(502);
+    expect(body.message).toContain('boom');
+    expect(body.errors.logs).toEqual(['info: executing playground']);
+  });
+
+  /**
+   * The node here never consults `ctx.signal`, so aborting the signal cannot stop
+   * it — only the race can. Without enforcement the request hangs until Node's
+   * 300 s `requestTimeout`, and `timeout_ms` is a promise the mock does not keep.
+   */
+  it('enforces the timeout even when the node ignores ctx.signal', async () => {
+    const started = Date.now();
+    const { status, body } = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { hang: true },
+      // Below the contract's 1000 ms floor on purpose — it must be clamped up.
+      timeout_ms: 10,
+    });
+    expect(status).toBe(502);
+    expect(body.message).toContain('timed out after 1000 ms');
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1000);
+  });
+});
+
 describe('config:resolve (in-process, real node code)', () => {
   it('resolves dynamic options for a field', async () => {
     const { status, body } = await send('POST', '/nodes/devkit:playground/1.0.0/config:resolve', {
@@ -162,5 +199,14 @@ describe('templates + workflows + schemas', () => {
     expect((await get('/schemas/node')).body).toEqual({ domain: 'node', versions: ['v0-draft'] });
     expect((await get('/schemas/nope')).status).toBe(404);
     expect((await get('/nope')).status).toBe(404);
+  });
+
+  /**
+   * A known domain with an unknown version must 404, not fall back to the latest
+   * schema. Answering 200 there tells an author their version exists and hands
+   * them a different document than the one they asked for.
+   */
+  it('404s an unknown version of a known schema domain', async () => {
+    expect((await get('/schemas/node/v99-nope')).status).toBe(404);
   });
 });

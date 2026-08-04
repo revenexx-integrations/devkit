@@ -9,6 +9,13 @@ import tailwindcss from '@tailwindcss/vite';
 // ./my-preview`.
 export default defineNuxtConfig({
   compatibilityDate: '2025-01-01',
+  // One host directory is shared by every node package on this machine — that is
+  // the point, it is what makes the ~500 MB dependency tree a one-time cost. The
+  // BUILD however must not be shared: two repos running `preview` at the same time
+  // would otherwise compile into the same `.nuxt/`, and the second one to start
+  // would serve the first one's app. `preview` therefore points each repo at its
+  // own build dir; a manual `npm run dev` in here keeps the default.
+  ...(process.env.DEVKIT_NUXT_BUILD_DIR ? { buildDir: process.env.DEVKIT_NUXT_BUILD_DIR } : {}),
   // SPA: no SSR, so the studio's browser-only composables (localStorage etc.)
   // behave exactly as in the real cockpit, and boot is fast.
   ssr: false,

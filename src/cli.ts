@@ -34,9 +34,9 @@ import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from './env.js';
 import { DEVKIT_VERSION } from './index.js';
-import { type LoadedPackage, loadPackageFromEntry } from './loader.js';
+import { isReloadableSource, type LoadedPackage, loadPackageFromEntry } from './loader.js';
 import { applySeeds, loadSeedsFromDir, loadState, saveState } from './persistence.js';
-import { clearHostInstallMarker, hostNeedsInstall, markHostInstalled, materializeHost, resolveHostDir } from './preview/host.js';
+import { clearHostInstallMarker, hostBuildDir, hostNeedsInstall, markHostInstalled, materializeHost, resolveHostDir } from './preview/host.js';
 import { createRequestListener } from './server.js';
 import { DevStore } from './store.js';
 
@@ -327,7 +327,7 @@ function watchAndReload(entry: string, onChange: () => void): (() => void) | und
   let timer: NodeJS.Timeout | undefined;
   try {
     const watcher = watch(dir, { recursive: true }, (_event, file) => {
-      if (file && /\.[cm]?tsx?$|\.js$/.test(file.toString())) {
+      if (file && isReloadableSource(file.toString())) {
         clearTimeout(timer);
         timer = setTimeout(onChange, 200);
       }
@@ -373,6 +373,7 @@ async function preview(options: CliOptions): Promise<void> {
     targetDir,
     integrationsApiUrl: apiUrl,
     force: options.force,
+    managed,
     log: msg => console.log(msg),
   });
   if (managed) {
@@ -380,8 +381,10 @@ async function preview(options: CliOptions): Promise<void> {
   }
 
   if (options.force) {
-    // --force means the pins may have changed; make sure the install is redone
-    // rather than trusting a node_modules/ that predates the new manifest.
+    // `hostNeedsInstall` already reinstalls when the pins changed, so this is not
+    // that case — it is the escape hatch --force is documented to be: an install
+    // that reported success but left an unusable tree has no other way out short
+    // of deleting the directory.
     clearHostInstallMarker(dir);
   }
   if (hostNeedsInstall(dir)) {
@@ -403,6 +406,9 @@ async function preview(options: CliOptions): Promise<void> {
       NUXT_PUBLIC_INTEGRATIONS_API: apiUrl,
       NUXT_PUBLIC_DEV_TOKEN: process.env.NUXT_PUBLIC_DEV_TOKEN ?? 'dev',
       NUXT_PUBLIC_DEV_TENANT: process.env.NUXT_PUBLIC_DEV_TENANT ?? 'dev-tenant',
+      // Keep the shared host's dependency install shared but its BUILD per repo,
+      // so two node packages previewing at once do not compile over each other.
+      DEVKIT_NUXT_BUILD_DIR: hostBuildDir(dir, process.cwd()),
     },
   });
 
