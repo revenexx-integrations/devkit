@@ -53,6 +53,7 @@
     "lint": "biome check src tests",
     "format": "biome format --write src tests",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "prepublishOnly": "npm run build",
     "release": "changeset publish"
   },
   "dependencies": {

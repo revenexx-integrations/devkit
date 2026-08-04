@@ -8,4 +8,8 @@ export default defineConfig({
   dts: { entry: ['src/index.ts', 'src/testing/index.ts'] },
   clean: true,
   sourcemap: true,
+  // `DEVKIT_VERSION` reads package.json via `import.meta.url`, which esbuild
+  // stubs as `{}` in the CJS output — without this shim the `require` entry
+  // throws "Invalid URL" on import.
+  shims: true,
 });

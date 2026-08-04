@@ -52,6 +52,12 @@ jobs:
 
       - run: npm ci
 
+      # `files` is ["dist", "assets"], so an unbuilt tree publishes a tarball with
+      # no dist at all — which is exactly how 0.2.0 shipped. The `prepublishOnly`
+      # script is the real guard (it runs inside `changeset publish`); this step
+      # surfaces a broken build here rather than mid-publish.
+      - run: npm run build
+
       # Versioning ("changeset version") runs by default; publishing happens only
       # once the "Version Packages" PR is merged and no changesets remain.
       - name: Create release PR or publish
