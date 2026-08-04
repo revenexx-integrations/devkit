@@ -43,7 +43,8 @@
   },
   "files": [
     "dist",
-    "assets"
+    "assets",
+    "preview-host"
   ],
   "scripts": {
     "build": "tsup",
@@ -54,7 +55,8 @@
     "format": "biome format --write src tests",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "prepublishOnly": "npm run build",
-    "release": "changeset publish"
+    "release": "changeset publish",
+    "refresh-contract": "node scripts/refresh-contract.mjs"
   },
   "dependencies": {
     "tsx": "^4.0.0"
@@ -66,7 +68,8 @@
     "@types/node": "^24.0.0",
     "tsup": "^8.0.0",
     "typescript": "^5.0.0",
-    "vitest": "^2.1.0"
+    "vitest": "^2.1.0",
+    "yaml": "^2.9.0"
   },
   "peerDependencies": {
     "@revenexx/integrations-node-sdk": ">=0.13.0",

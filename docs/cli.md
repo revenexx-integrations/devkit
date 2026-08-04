@@ -8,8 +8,8 @@ package — all relative defaults resolve against the current working directory.
 | Command | What it does |
 | --- | --- |
 | `integrations-devkit` | Start the mock Integrations API. Serves a static UI when `--ui` is given. |
-| `integrations-devkit preview` | Scaffold the Nuxt preview host if needed, install its dependencies, then run it together with the mock. |
-| `integrations-devkit init-preview` | Only scaffold the Nuxt preview host, then stop. The scaffold is yours to edit afterwards. |
+| `integrations-devkit preview` | Materialize the Nuxt preview host into the shared cache if needed, install its dependencies, then run it together with the mock. |
+| `integrations-devkit init-preview --dir <path>` | Take an **unmanaged** copy of the preview host to modify. Requires `--dir`; without it the command errors, because the managed copy is `preview`'s business. |
 | `integrations-devkit reset` | Delete the persisted session overlay. |
 | `integrations-devkit --version` | Print the devkit version. `-v` also works. |
 
@@ -27,8 +27,22 @@ package — all relative defaults resolve against the current working directory.
 | `--open` | off | Open the preview in a browser. |
 | `--env <path>` | `.env` when present | Env file to load before seeds are applied, *instead of* `.env`. Needs Node >= 20.12. |
 | `--no-env` | off | Load no env file at all, not even `.env`. |
-| `--dir <path>` | `.revenexx-dev/preview` | Preview host directory. Applies to `preview` and `init-preview`. |
-| `--force` | off | Overwrite existing scaffold files. Applies to `preview` and `init-preview`. |
+| `--dir <path>` | the managed cache | Use this preview-host directory instead of the version-keyed cache. The copy becomes unmanaged — devkit upgrades will not touch it. Applies to `preview` and `init-preview`. |
+| `--force` | off | Re-copy the host even when the target looks complete, and reinstall its dependencies. Applies to `preview` and `init-preview`. |
+
+## Where the preview host lives
+
+`preview` does not put anything in your repo except `.revenexx-dev/state.json`. The host
+is copied into:
+
+```
+${XDG_CACHE_HOME:-~/.cache}/revenexx/devkit-preview/<devkit-version>/
+```
+
+Keying on the devkit version means all your node packages share one dependency install,
+and an upgrade can never leave you on a stale host — a new version is simply a new
+directory. Old directories are not pruned automatically; delete them when you want the
+disk back.
 
 ## Common invocations
 
@@ -44,10 +58,18 @@ Run the mock on another port, without touching disk:
 npx integrations-devkit --no-ui --port 4000 --no-persist
 ```
 
-Re-scaffold a preview host you have modified beyond repair:
+Take a copy of the host to modify, and run it:
 
 ```bash
-npx integrations-devkit init-preview --force
+npx integrations-devkit init-preview --dir ./my-preview
+npx integrations-devkit preview --dir ./my-preview
+```
+
+Force a clean re-copy and reinstall of the managed host (e.g. after an interrupted
+install):
+
+```bash
+npx integrations-devkit preview --force
 ```
 
 Throw away the interactive session state and start from the committed seeds again:
@@ -76,9 +98,19 @@ staging`. If you pass a bare name and the matching `.env.<name>` exists, the err
 > path — so `--env-file missing.env` fails inside Node (exit code 9) before the devkit
 > starts. Passing one is not an error, but the devkit will point you at `--env`.
 
-Scaffold the host into a directory outside the package — useful to keep the package's
-own git tree untouched:
+## Keeping the mock in step with the real API
+
+The mock is verified against a vendored snapshot of the integrations service's OpenAPI
+contract. Refresh the snapshot after the service changes:
 
 ```bash
-npx integrations-devkit preview --dir /tmp/devkit-preview
+# spec only (works offline from a sibling checkout of services/integrations)
+npm run refresh-contract
+
+# spec + the JSON schemas, which need a running service
+npm run refresh-contract -- --service https://integrations.rvnxx.test/api/v1
 ```
+
+Then run `npm test`: `tests/contract.test.ts` requests every path in the snapshot and
+fails on any the mock does not serve, answers with the wrong status code, or returns
+without a property the contract declares.

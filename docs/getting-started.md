@@ -6,8 +6,9 @@ Get a node package rendering in the Cockpit preview.
 
 - **Node.js >= 20.3.0**.
 - An integration node package that exports nodes and/or credentials from `src/index.ts`.
-- Access to the private `@revenexx` npm registry (the preview host installs
-  `@revenexx/studio-integrations` and `@revenexx/studio-shared`).
+- Plain public npm access. The preview host pulls `@revenexx/studio-integrations` and
+  `@revenexx/studio-shared`, which are published publicly — no private registry or token
+  is needed.
 
 ## Install
 
@@ -40,11 +41,18 @@ npm run preview
 
 On the first run this does four things:
 
-1. Scaffolds a minimal Nuxt host into `.revenexx-dev/preview/`.
-2. Runs `npm install` in it — heavy the first time, as it pulls Nuxt and the studio
-   packages.
+1. Copies the Nuxt preview host into a shared cache directory,
+   `${XDG_CACHE_HOME:-~/.cache}/revenexx/devkit-preview/<devkit-version>/`.
+2. Runs `npm install` there — heavy the first time, as it pulls Nuxt and the studio
+   packages. Subsequent node packages on the same machine reuse it, so this cost is paid
+   once per devkit version, not once per repo.
 3. Starts the mock Integrations API.
 4. Runs `nuxt dev` wired to that mock.
+
+Nothing but `.revenexx-dev/state.json` is written into your repo. The host in the cache is
+a managed, disposable copy — see
+[the architecture notes](architecture.md#where-the-host-runs-and-why-not-in-your-repo) if
+you want to modify it.
 
 ## Verify it works
 

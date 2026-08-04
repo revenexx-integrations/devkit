@@ -1,4 +1,5 @@
 import type { ICredentialDescription, INodeDescription, ITemplateDescription } from '@revenexx/integrations-node-sdk';
+import type { PackageInfo } from './loader.js';
 import { MANIFEST_VERSION } from '@revenexx/integrations-node-sdk';
 import type { CredentialRecord, SecretRecord, TriggerRecord, WorkflowRecord } from './store.js';
 
@@ -20,20 +21,29 @@ export function hasDynamicOutputs(desc: INodeDescription): boolean {
   return (desc.outputs ?? []).some(o => o.resolveOutputs === true);
 }
 
-export function nodeToApi(desc: INodeDescription): Record<string, unknown> {
+export interface NodeApiContext {
+  packageInfo: PackageInfo;
+  loadedAt: string;
+}
+
+export function nodeToApi(desc: INodeDescription, ctx?: NodeApiContext): Record<string, unknown> {
   const [namespace] = desc.slug.split(':');
   return {
     name: desc.name,
     namespace: namespace ?? null,
     slug: desc.slug,
     version: desc.version,
+    // The contract declares `package` and both timestamps as present. Nodes here
+    // come from the developer's working tree, so the package identity is read from
+    // their package.json and the timestamps are when the mock loaded the entry.
+    package: ctx?.packageInfo ?? null,
     manifest_version: MANIFEST_VERSION,
     manifest: desc,
     has_dynamic_options: hasDynamicOptions(desc),
     has_dynamic_schema: hasDynamicSchema(desc),
     has_dynamic_outputs: hasDynamicOutputs(desc),
-    created_at: null,
-    updated_at: null,
+    created_at: ctx?.loadedAt ?? null,
+    updated_at: ctx?.loadedAt ?? null,
   };
 }
 
@@ -44,6 +54,7 @@ export function credentialTypeToApi(desc: ICredentialDescription): Record<string
     name: desc.name,
     description: desc.description ?? null,
     icon: desc.icon ?? null,
+    images: desc.images ?? [],
     auth_kind: desc.authKind,
     fields: desc.fields,
   };
@@ -80,11 +91,25 @@ export function secretToApi(record: SecretRecord): Record<string, unknown> {
   };
 }
 
+/**
+ * NOTE the asymmetry, which is the contract's and not a mistake here: a WORKFLOW
+ * carries its graph as `blob` + `blob_definition_version`, while a TEMPLATE
+ * carries its graph as `definition` + `blob_version`.
+ */
 export function workflowToApi(record: WorkflowRecord): Record<string, unknown> {
   return {
     id: record.id,
     name: record.name,
-    definition: record.definition,
+    description: record.description,
+    blob_definition_version: record.blobDefinitionVersion,
+    blob: record.blob,
+    active: record.active,
+    execution_mode: record.executionMode,
+    revision: record.revision,
+    // The service reports blob-validation warnings here. The mock's validation is
+    // schema-light (see the fidelity caveats), so it never has any — but the field
+    // is part of the contract and clients may read it.
+    warnings: [],
     build_status: record.buildStatus,
     created_at: record.createdAt,
     updated_at: record.updatedAt,
@@ -115,6 +140,7 @@ export function templateSummaryToApi(t: ITemplateDescription): Record<string, un
     shortDescription: t.shortDescription ?? null,
     description: t.description ?? null,
     icon: t.icon ?? null,
+    images: t.images ?? [],
     industries: t.industries ?? [],
     vendors: t.vendors ?? [],
     triggerTypes: (t.triggers ?? []).map(tr => tr.type),
@@ -124,8 +150,12 @@ export function templateSummaryToApi(t: ITemplateDescription): Record<string, un
 export function templateFullToApi(t: ITemplateDescription): Record<string, unknown> {
   return {
     ...templateSummaryToApi(t),
-    blobVersion: t.blobVersion,
+    // snake_case per the contract, even though the surrounding template fields are
+    // camelCase and the SDK's own field is `blobVersion`.
+    blob_version: t.blobVersion,
     definition: t.definition,
-    triggers: t.triggers ?? [],
+    // `config` is optional in the SDK (a manual trigger has none) but declared in
+    // the contract, so normalise it to an object rather than omitting it.
+    triggers: (t.triggers ?? []).map(tr => ({ ...tr, config: tr.config ?? {} })),
   };
 }

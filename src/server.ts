@@ -1,11 +1,12 @@
 import http from 'node:http';
 import { DevApiError } from './errors.js';
-import { readJson, sendError, sendJson } from './http.js';
+import { readJson, sendError, sendJson, sendNoContent } from './http.js';
 import type { LoadedPackage } from './loader.js';
 import { credentialInstanceToApi, credentialTypeToApi, nodeToApi, secretToApi, templateFullToApi, templateSummaryToApi, triggerToApi, workflowToApi } from './projections.js';
 import {
   buildOAuthAuthorizeUrl,
   exchangeOAuthCode,
+  executeNodeTest,
   findCredential,
   findCredentialType,
   nodeVersions,
@@ -56,14 +57,18 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, deps:
   switch (seg[0]) {
     case undefined:
     case 'health':
+    // The service's health route is `/up` (Laravel's default); `/health` is kept
+    // because the devkit has always answered there.
+    case 'up':
       return void sendJson(res, 200, { status: 'ok' });
 
     case 'me':
+      // Shape per the contract: { user, context, claims }. The mock used to send a
+      // flat { id, name, email, tenant_id }, which no real client could consume.
       return void sendJson(res, 200, {
-        id: 'dev-user',
-        name: 'Dev User',
-        email: 'dev@revenexx.test',
-        tenant_id: DEV_TENANT_ID,
+        user: { id: 1, zitadel_id: 'dev-user', email: 'dev@revenexx.test', name: 'Dev User' },
+        context: { tenant_id: DEV_TENANT_ID, active_plane: 'public', roles: ['admin', 'user'] },
+        claims: { iss: 'https://id.revenexx.test', sub: 'dev-user', aud: ['devkit'] },
       });
 
     case 'schemas':
@@ -94,6 +99,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, deps:
 
 // --------------------------------------------------------------------- schemas
 
+/**
+ * The two schema routes have DIFFERENT shapes in the contract, which the mock
+ * previously collapsed into one (it served the raw schema at both paths):
+ *
+ *   GET /schemas/{domain}           -> { domain, versions: string[] }   (a listing)
+ *   GET /schemas/{domain}/{version} -> { domain, version, schema: {…} } (wrapped)
+ *
+ * Keys in `deps.schemas` are `domain` and `domain/version`, from the
+ * `<domain>-<version>.json` files in assets/schemas.
+ */
 function handleSchemas(res: http.ServerResponse, deps: DevServerDeps, seg: string[]): void {
   const domain = seg[1];
   const version = seg[2];
@@ -101,11 +116,23 @@ function handleSchemas(res: http.ServerResponse, deps: DevServerDeps, seg: strin
     throw new DevApiError(404, 'Schema domain required.');
   }
   const schemas = deps.schemas ?? {};
-  const schema = (version && schemas[`${domain}/${version}`]) || schemas[domain];
-  if (!schema) {
-    throw new DevApiError(404, `No schema for '${domain}${version ? `/${version}` : ''}'. Vendor it into assets/schemas.`);
+
+  if (!version) {
+    const versions = Object.keys(schemas)
+      .filter(key => key.startsWith(`${domain}/`))
+      .map(key => key.slice(domain.length + 1))
+      .sort();
+    if (versions.length === 0 && !schemas[domain]) {
+      throw new DevApiError(404, `Unknown schema domain '${domain}'. Vendor it into assets/schemas.`);
+    }
+    return void sendJson(res, 200, { domain, versions });
   }
-  sendJson(res, 200, schema);
+
+  const schema = schemas[`${domain}/${version}`] ?? (schemas[domain] as unknown);
+  if (!schema) {
+    throw new DevApiError(404, `Unknown schema version '${domain}/${version}'. Vendor it into assets/schemas.`);
+  }
+  sendJson(res, 200, { domain, version, schema });
 }
 
 // ----------------------------------------------------------------------- nodes
@@ -113,7 +140,7 @@ function handleSchemas(res: http.ServerResponse, deps: DevServerDeps, seg: strin
 async function handleNodes(req: http.IncomingMessage, res: http.ServerResponse, method: string, loaded: LoadedPackage, store: DevStore, seg: string[]): Promise<void> {
   // GET /nodes
   if (seg.length === 1 && method === 'GET') {
-    return void sendJson(res, 200, { data: loaded.manifest.nodes.map(nodeToApi) });
+    return void sendJson(res, 200, { data: loaded.manifest.nodes.map(n => nodeToApi(n, nodeApiContext(loaded))) });
   }
   const slug = seg[1];
   if (!slug) {
@@ -151,6 +178,11 @@ async function handleNodes(req: http.IncomingMessage, res: http.ServerResponse, 
   }
 
   // POST /nodes/{slug}/{version}/config:validate
+  //
+  // DEVKIT-ONLY: this endpoint does NOT exist in the real integrations API. It
+  // backs the preview host's `/nodes` page (Save → verdict + refused fields).
+  // Listed in DEVKIT_ONLY in tests/contract.test.ts; do not build node code that
+  // depends on it existing in production.
   if (seg[3] === 'config:validate' && method === 'POST') {
     const body = await readJson<{ config?: Record<string, unknown>; locale?: string }>(req);
     const result = await validateNodeConfig(loaded, store, {
@@ -163,16 +195,52 @@ async function handleNodes(req: http.IncomingMessage, res: http.ServerResponse, 
     return void sendJson(res, 200, result);
   }
 
+  // POST /nodes/{slug}/{version}/execute:test
+  if (seg[3] === 'execute:test' && method === 'POST') {
+    const body = await readJson<{ config?: Record<string, unknown>; inputs?: Record<string, unknown>; timeout_ms?: number }>(req);
+    const result = await executeNodeTest(loaded, store, {
+      slug,
+      version,
+      config: body.config ?? {},
+      inputs: body.inputs ?? {},
+      timeoutMs: body.timeout_ms,
+    });
+    return void sendJson(res, 200, result);
+  }
+
   // GET /nodes/{slug}/{version}
   if (seg.length === 3 && method === 'GET') {
-    const node = loaded.manifest.nodes.find(n => n.slug === slug && (version === 'latest' || n.version === version));
-    if (!node) {
-      throw new DevApiError(404, `Node '${slug}@${version}' not found.`);
-    }
-    return void sendJson(res, 200, nodeToApi(node));
+    return void sendJson(res, 200, nodeToApi(findManifestNode(loaded, slug, version), nodeApiContext(loaded)));
+  }
+
+  // DELETE /nodes/{slug}/{version}
+  //
+  // The mock has no node registry to delete from — nodes come from the package
+  // entry on disk. The route exists so the shape of a real deletion (404 for an
+  // unknown node, 204 for a known one) is what an author sees.
+  if (seg.length === 3 && method === 'DELETE') {
+    findManifestNode(loaded, slug, version);
+    return void sendNoContent(res);
   }
 
   throw new DevApiError(404, `No route for nodes/${seg.slice(1).join('/')}`);
+}
+
+/** The package identity + load time `GET /nodes` reports alongside each node. */
+function nodeApiContext(loaded: LoadedPackage) {
+  return { packageInfo: loaded.packageInfo, loadedAt: loaded.loadedAt };
+}
+
+/**
+ * Resolves a node's MANIFEST entry (what `GET /nodes` projects), or throws 404.
+ * Distinct from resolve.ts's `findNode`, which returns the live INode instance.
+ */
+function findManifestNode(loaded: LoadedPackage, slug: string, version: string) {
+  const node = loaded.manifest.nodes.find(n => n.slug === slug && (version === 'latest' || n.version === version));
+  if (!node) {
+    throw new DevApiError(404, `Node '${slug}@${version}' not found.`);
+  }
+  return node;
 }
 
 // ------------------------------------------------------------- credential-types
@@ -253,7 +321,17 @@ async function handleCredentials(req: http.IncomingMessage, res: http.ServerResp
   // POST /credentials/{id}/test
   if (seg[2] === 'test' && method === 'POST') {
     const result = await testCredentialInstance(loaded, store, id);
-    return void sendJson(res, 200, result);
+    // The contract reports the recorded outcome alongside the verdict — the
+    // service persists it on the credential. (The inline variant,
+    // POST /credentials/test, returns the bare `{ ok }` and records nothing,
+    // because there is no record yet.)
+    const record = store.recordCredentialTest(id, { ok: result.ok, message: result.message ?? null });
+    return void sendJson(res, 200, {
+      ok: result.ok,
+      message: result.message ?? null,
+      last_test_at: record?.lastTestAt ?? null,
+      last_test_ok: record?.lastTestOk ?? result.ok,
+    });
   }
 
   // POST /credentials/{id}/oauth/authorize-url
@@ -283,7 +361,7 @@ async function handleCredentials(req: http.IncomingMessage, res: http.ServerResp
     }
     if (method === 'DELETE') {
       store.deleteCredential(id);
-      return void sendJson(res, 200, { deleted: true });
+      return void sendNoContent(res);
     }
   }
 
@@ -295,7 +373,10 @@ async function handleCredentials(req: http.IncomingMessage, res: http.ServerResp
 async function handleSecrets(req: http.IncomingMessage, res: http.ServerResponse, method: string, store: DevStore, seg: string[]): Promise<void> {
   if (seg.length === 1) {
     if (method === 'GET') {
-      return void sendJson(res, 200, { data: store.listSecrets().map(secretToApi) });
+      // The contract's top-level property is `keys: string[]` — a bare key list,
+      // not records. The mock used to send `{ data: [{key, created_at, …}] }`,
+      // which is why the UI carries a three-way envelope fallback.
+      return void sendJson(res, 200, { keys: store.listSecrets().map(s => s.key) });
     }
     if (method === 'POST') {
       const body = await readJson<{ key?: string; value?: string }>(req);
@@ -317,7 +398,7 @@ async function handleSecrets(req: http.IncomingMessage, res: http.ServerResponse
     }
     if (method === 'DELETE') {
       store.deleteSecret(key);
-      return void sendJson(res, 200, { deleted: true });
+      return void sendNoContent(res);
     }
   }
   throw new DevApiError(404, `No route for secrets/${seg.slice(1).join('/')}`);
@@ -336,17 +417,24 @@ async function handleTemplates(req: http.IncomingMessage, res: http.ServerRespon
     throw new DevApiError(404, `Template '${slug}' not found.`);
   }
   if (seg.length === 2 && method === 'GET') {
-    return void sendJson(res, 200, templateFullToApi(template));
+    // Wrapped in `data` per the contract; the mock used to return it bare.
+    return void sendJson(res, 200, { data: templateFullToApi(template) });
   }
   if (seg[2] === 'requirements' && method === 'GET') {
-    // Best-effort: surface the credential types referenced by the template blob.
-    return void sendJson(res, 200, { data: { credentials: [], secrets: [] } });
+    // The contract's key is `credentialTypes` (the mock said `credentials`).
+    // Resolving what a template's blob actually references is not implemented —
+    // an empty requirement set is honest, not a stand-in for real analysis.
+    return void sendJson(res, 200, { data: { credentialTypes: [], secrets: [] } });
   }
   if (seg[2] === 'instantiate' && method === 'POST') {
     const body = await readJson<{ name?: string }>(req);
+    // A template's `definition` IS a workflow blob authored against its
+    // `blobVersion` (see ITemplateDescription), so it maps straight onto the
+    // workflow's blob + blob_definition_version.
     const workflow = store.createWorkflow({
       name: body.name ?? String(template.name),
-      definition: template.definition,
+      blob: template.definition,
+      blobDefinitionVersion: template.blobVersion,
     });
     for (const trigger of template.triggers ?? []) {
       store.createTrigger({
@@ -365,16 +453,34 @@ async function handleTemplates(req: http.IncomingMessage, res: http.ServerRespon
 
 // ------------------------------------------------------------------- workflows
 
+/**
+ * Body of POST /workflows and PUT /workflows/{id}, in the contract's snake_case.
+ * Note `blob` — NOT `definition`. The mock read `body.definition` until 0.2.2,
+ * so every workflow saved from the real UI silently stored an empty graph.
+ */
+interface WorkflowWriteBody {
+  name?: string;
+  description?: string | null;
+  blob?: Record<string, unknown>;
+  blob_definition_version?: string;
+  active?: boolean;
+  execution_mode?: string;
+}
+
 async function handleWorkflows(req: http.IncomingMessage, res: http.ServerResponse, method: string, store: DevStore, seg: string[]): Promise<void> {
   if (seg.length === 1) {
     if (method === 'GET') {
       return void sendJson(res, 200, { data: store.listWorkflows().map(workflowToApi) });
     }
     if (method === 'POST') {
-      const body = await readJson<{ name?: string; definition?: Record<string, unknown> }>(req);
+      const body = await readJson<WorkflowWriteBody>(req);
       const workflow = store.createWorkflow({
         name: body.name ?? 'Untitled workflow',
-        definition: body.definition ?? {},
+        blob: body.blob ?? {},
+        blobDefinitionVersion: body.blob_definition_version,
+        description: body.description,
+        active: body.active,
+        executionMode: body.execution_mode,
       });
       return void sendJson(res, 201, workflowToApi(workflow));
     }
@@ -420,7 +526,7 @@ async function handleWorkflows(req: http.IncomingMessage, res: http.ServerRespon
     }
     if (triggerId && method === 'DELETE') {
       store.deleteTrigger(triggerId);
-      return void sendJson(res, 200, { deleted: true });
+      return void sendNoContent(res);
     }
   }
 
@@ -434,8 +540,15 @@ async function handleWorkflows(req: http.IncomingMessage, res: http.ServerRespon
       return void sendJson(res, 200, workflowToApi(record));
     }
     if (method === 'PUT') {
-      const body = await readJson<{ name?: string; definition?: Record<string, unknown> }>(req);
-      const updated = store.updateWorkflow(id, { name: body.name, definition: body.definition });
+      const body = await readJson<WorkflowWriteBody>(req);
+      const updated = store.updateWorkflow(id, {
+        name: body.name,
+        blob: body.blob,
+        blobDefinitionVersion: body.blob_definition_version,
+        description: body.description,
+        active: body.active,
+        executionMode: body.execution_mode,
+      });
       if (!updated) {
         throw new DevApiError(404, `Workflow '${id}' not found.`);
       }
@@ -443,7 +556,7 @@ async function handleWorkflows(req: http.IncomingMessage, res: http.ServerRespon
     }
     if (method === 'DELETE') {
       store.deleteWorkflow(id);
-      return void sendJson(res, 200, { deleted: true });
+      return void sendNoContent(res);
     }
   }
 

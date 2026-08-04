@@ -57,10 +57,17 @@ host app. The devkit scaffolds and runs that host for you:
 npm run preview
 ```
 
-This (1) scaffolds a minimal Nuxt host into `.revenexx-dev/preview/` (gitignored)
-on first run, (2) `npm install`s it (heavy first time — pulls Nuxt + the studio
-packages), (3) starts the mock API, and (4) runs `nuxt dev` wired to the mock.
-Open **http://localhost:3000/integrations**.
+This (1) copies the host into a shared cache directory, (2) `npm install`s it there
+(heavy the first time — pulls Nuxt + the studio packages), (3) starts the mock API,
+and (4) runs `nuxt dev` wired to the mock. Open
+**http://localhost:3000/integrations**.
+
+**The host does not go into your repo.** It is copied to
+`${XDG_CACHE_HOME:-~/.cache}/revenexx/devkit-preview/<devkit-version>/`, so every
+one of your node packages shares a single dependency install, and a devkit upgrade
+can never leave you running a stale host. Your repo only gets
+`.revenexx-dev/state.json`. If you still have a `.revenexx-dev/preview/` from an
+older devkit, it is unused and can be deleted.
 
 No auth shim is needed: `@revenexx/studio-shared`'s standalone
 `usePlatformAuth`/`usePlatformTenant` read a dev token/tenant from
@@ -68,15 +75,24 @@ No auth shim is needed: `@revenexx/studio-shared`'s standalone
 mock ignores the values). `runtimeConfig.public.integrationsApi` is pointed at
 the mock automatically.
 
-- `integrations-devkit init-preview` — only scaffold the host (then edit it; it's yours).
-- `integrations-devkit preview --dir <path> --force` — custom dir / re-scaffold.
+The managed copy is a disposable artifact — don't edit it, it is replaced on the
+next version bump. To change the host, take a copy that is yours:
+
+- `integrations-devkit init-preview --dir ./my-preview` — an **unmanaged** copy,
+  never touched by devkit upgrades.
+- `integrations-devkit preview --dir ./my-preview` — run that copy instead.
 
 > **Scope:** the preview targets the **slimmed** studio build — node listing +
-> credential/template management + **config-field resolving**. `studio-integrations`
-> 0.1.4 still ships the workflow editor and renders `field.options` statically;
-> config-field resolving needs the UI to `POST /nodes/{slug}/{version}/config:resolve`
-> (the mock already serves it). The Temporal parts (run history, `…/runs/*`) are
-> intentionally not mocked.
+> credential/template management + **config-field resolving** (the UI
+> `POST`s to `/nodes/{slug}/{version}/config:resolve`, which the mock serves).
+> The **Workflows** surface is hidden until phase 2, because workflow execution is
+> not mocked; the Temporal parts (run history, `…/runs/*`) are intentionally absent.
+
+The mock is checked against the service's own OpenAPI contract — see
+[docs/architecture.md](docs/architecture.md#staying-in-step-with-the-real-api).
+One caveat to know up front: `POST /nodes/{slug}/{version}/config:validate` is a
+**devkit-only** endpoint used by the preview's node page. It does not exist in the
+real API.
 
 Pass `--ui <dir>` to `integrations-devkit` if you instead have a prebuilt static SPA.
 
@@ -92,6 +108,8 @@ Pass `--ui <dir>` to `integrations-devkit` if you instead have a prebuilt static
 | `--ui <dir>` | resolve UI package | Static UI build to serve |
 | `--no-ui` | off | Run API-only |
 | `--open` | off | Open the preview in a browser |
+| `--dir <path>` | managed cache | Use this preview-host dir instead (unmanaged) |
+| `--force` | off | Re-copy the host even if the target looks complete |
 | `reset` (subcommand) | | Delete the session overlay |
 
 ## Seeds + persistence (layered)
@@ -176,5 +194,9 @@ This is a faithful **dev** stand-in, not the production service:
   reproduced.
 - Workflow-blob validation is light and schema-based; the production service
   does deeper cross-validation on save.
-- Workflow **run execution** is not included (v1).
-# devkit
+- Workflow **run execution** is not included (v1), so the Workflows surface is
+  hidden in the preview.
+- `assets/schemas/` is still empty, so `GET /schemas/{domain}` 404s and the UI's
+  client-side schema validation is inactive.
+- `POST /nodes/{slug}/{version}/config:validate` exists only here, not in the real
+  API.

@@ -1,5 +1,16 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildManifest, type ICredential, type INode, type ITemplateDescription, type NodeManifest } from '@revenexx/integrations-node-sdk';
+
+/** Identity of the npm package the nodes came from, as `GET /nodes` reports it. */
+export interface PackageInfo {
+  name: string;
+  version: string;
+  label: string;
+}
+
+const UNKNOWN_PACKAGE: PackageInfo = { name: 'unknown', version: '0.0.0', label: 'Local package' };
 
 /**
  * A node package loaded into the dev process: its live `NODES` / `CREDENTIALS`
@@ -12,6 +23,36 @@ export interface LoadedPackage {
   credentials: ICredential[];
   templates: ITemplateDescription[];
   manifest: NodeManifest;
+  /** Reported as each node's `package`; the contract declares it non-null. */
+  packageInfo: PackageInfo;
+  /** Stands in for the service's per-node `created_at`/`updated_at`. */
+  loadedAt: string;
+}
+
+/**
+ * Reads the nearest `package.json` above `entryPath` for the node package's
+ * identity. The real service knows this from the published bundle; here it comes
+ * from the developer's own manifest.
+ */
+export function readPackageInfo(entryPath: string): PackageInfo {
+  let dir = dirname(entryPath);
+  for (let up = 0; up < 6; up += 1) {
+    const candidate = join(dir, 'package.json');
+    if (existsSync(candidate)) {
+      try {
+        const pkg = JSON.parse(readFileSync(candidate, 'utf-8')) as { name?: string; version?: string; description?: string };
+        if (pkg.name) {
+          return { name: pkg.name, version: pkg.version ?? '0.0.0', label: pkg.name.split('/').pop() ?? pkg.name };
+        }
+      } catch {
+        // Unreadable package.json is not worth failing the preview over.
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return UNKNOWN_PACKAGE;
 }
 
 interface PackageExports {
@@ -25,7 +66,7 @@ interface PackageExports {
  * Mirrors the checks in the SDK's `rvnxx-nodes manifest` CLI so the dev loop
  * and the build produce identical manifests.
  */
-export function resolveExports(mod: PackageExports): LoadedPackage {
+export function resolveExports(mod: PackageExports, packageInfo: PackageInfo = UNKNOWN_PACKAGE): LoadedPackage {
   if (!Array.isArray(mod.NODES)) {
     throw new Error('Package entry does not export a `NODES` array. Export `NODES: INode[]`.');
   }
@@ -45,6 +86,8 @@ export function resolveExports(mod: PackageExports): LoadedPackage {
     credentials,
     templates,
     manifest: buildManifest(nodes, credentials, templates),
+    packageInfo,
+    loadedAt: new Date().toISOString(),
   };
 }
 
@@ -79,5 +122,5 @@ export async function importFresh<T = unknown>(entryPath: string): Promise<T> {
  * repeated calls (hot-reload) re-evaluate the module.
  */
 export async function loadPackageFromEntry(entryPath: string): Promise<LoadedPackage> {
-  return resolveExports(await importFresh<PackageExports>(entryPath));
+  return resolveExports(await importFresh<PackageExports>(entryPath), readPackageInfo(entryPath));
 }

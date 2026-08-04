@@ -1,15 +1,18 @@
 version: 2
 
 # Wie im SDK ist keine `registries:`-Sektion (und kein NPM_GH_TOKEN-Secret)
-# nötig: devkits *eigene* Dependencies kommen alle aus der public npm-Registry
-# — `tsx` (production) sowie die Peers `@revenexx/integrations-node-sdk` und
-# `vitest`.
+# nötig: alle Dependencies kommen aus der public npm-Registry — `tsx`
+# (production), die Peers `@revenexx/integrations-node-sdk` und `vitest`, und
+# auch die `@revenexx/studio-*`-Pakete des Preview-Hosts. Letztere sind
+# entgegen einem früheren Kommentar hier NICHT privat: `@revenexx/studio`,
+# `-shared` und `-integrations` lassen sich anonym gegen registry.npmjs.org
+# auflösen.
 #
-# ACHTUNG: die privaten `@revenexx/studio-*`-Pins leben in
-# `src/preview/templates.ts` (die generierte package.json des Nuxt-Preview-Hosts)
-# und stehen NICHT in dieser package.json. Dependabot sieht sie deshalb nicht
-# und bumpt sie nicht — der Studio-Peer-Satz muss weiterhin manuell nachgezogen
-# werden.
+# Der Studio-Satz war bis 0.2.2 unsichtbar für Dependabot, weil er als
+# String-Literale in `src/preview/templates.ts` lag. Seit der Preview-Host ein
+# echtes Nuxt-Projekt unter `preview-host/` ist, bumpt Dependabot ihn selbst —
+# und `tests/contract.test.ts` prüft auf dem PR, ob der Mock die API der neuen
+# studio-integrations-Version noch erfüllt.
 
 updates:
   # npm-Dependencies (production: tsx, dazu die devDependencies)
@@ -31,6 +34,27 @@ updates:
         update-types:
           - "minor"
           - "patch"
+
+  # Preview-Host: der Cockpit-UI-Satz (studio-*, Nuxt, vue-flow, tiptap).
+  # Eigener Eintrag statt Teil von "/" — ein Bump hier ändert nicht das
+  # veröffentlichte Devkit-Paket, sondern nur den Prüfstand, und soll deshalb
+  # getrennt reviewbar sein. `@revenexx/studio-integrations` ist exakt gepinnt,
+  # damit jeder Bump ein bewusstes "wir unterstützen jetzt Version X" ist.
+  - package-ecosystem: "npm"
+    directory: "/preview-host"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore"
+      prefix-development: "chore"
+    open-pull-requests-limit: 5
+    groups:
+      # Der Studio-Satz gehört zusammen — studio-integrations bringt
+      # studio-shared/solar-icons als eigene Deps mit, und die Peers
+      # (vue-flow, tiptap, vue-sonner) müssen dazu passen.
+      preview-host:
+        patterns:
+          - "*"
 
   # GitHub-Actions aktuell halten (wie im integrations-Repo)
   - package-ecosystem: "github-actions"

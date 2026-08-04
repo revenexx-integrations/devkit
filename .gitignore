@@ -5,3 +5,9 @@ dist/
 coverage/
 .vitest-cache/
 .revenexx-dev/
+
+# Build output of preview-host/ when working on the host itself.
+# (node_modules/ and .env above already match at any depth.)
+.nuxt/
+.output/
+.data/
