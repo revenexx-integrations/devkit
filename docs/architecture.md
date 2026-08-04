@@ -91,19 +91,66 @@ That copy is never updated by devkit upgrades, and `preview --dir ./my-preview` 
 generated `.env` is written once and then left alone, unlike the managed one which is
 refreshed every run.
 
-What is shared and what is not is a deliberate split: the ~500 MB dependency tree is shared
-(that is the whole point), the compiled app is not. `preview` points each consumer repo at
-its own `.nuxt-<hash-of-cwd>/` inside the host directory via `DEVKIT_NUXT_BUILD_DIR`, so
-previewing two node packages simultaneously does not have them building over one another.
+### What is shared, and what must not be
 
-Two structural guards keep the directory honest, both of the same shape — a marker file
+The ~500 MB dependency tree is shared — that is the whole point. Everything a *running*
+Nuxt instance writes or watches must not be, and getting that list wrong is not a
+performance question: two previews sharing any of these actively break each other.
+
+| Per repo | Env var | Why it cannot be shared |
+| --- | --- | --- |
+| `.nuxt-<hash>/` | `DEVKIT_NUXT_BUILD_DIR` | Two repos would compile into one `.nuxt/`, and the second to start would serve the first one's app. |
+| `.vite-<hash>/` | `DEVKIT_VITE_CACHE_DIR` | Vite's dependency cache — see below. |
+| `.env.<hash>` | passed as `nuxt dev --dotenv` | Nuxt watches its dotenv file and *respawns* when it changes. The managed file carries the mock's port, so it is rewritten every run — a shared one restarted every other preview. The dedupe is mtime-based, so identical content did not help. |
+
+`<hash>` is the first 12 hex digits of `sha256(cwd)`, so each is stable across runs — the
+caches still pay off — and distinct per repo.
+
+The Vite cache is the one worth understanding, because for a while the build-dir split
+alone was not merely insufficient but the direct cause of the worst failure. Vite anchors
+`cacheDir` on `rootDir` (the *shared* host), not on the build dir, so all repos used one
+`node_modules/.cache/vite`. Vite invalidates that cache on a `configHash` computed over
+`resolve.alias` — which contains Nuxt's `#build` alias — which is the per-repo build dir.
+So each instance computed a different hash, judged the other's cache stale, and ran
+`rm -rf` on the dependency directory the other was actively serving from. Every time, in
+both directions, until one was killed. Overriding `cacheDir` per repo is what actually
+isolates them, and it pays off sequentially too: switching repos no longer re-optimizes
+from scratch.
+
+One related setting is easy to miss: `preview-host/nuxt.config.ts` puts `.nuxt-*` and
+`.vite-*` in `ignore`. Nuxt already ignores its own `buildDir`, but it cannot know that
+sibling build dirs exist — and without them ignored, a second `preview` starting up makes
+every running instance clear its module graph and force a full browser reload, because
+Vite saw *a* `tsconfig.json` change (`reloadOnTsconfigChange`) that belonged to another
+repo entirely.
+
+### Guards on the directory
+
+Three markers keep the shared directory honest. The first two have the same shape — a file
 recording that a step *finished*, because "the output looks present" cannot tell a completed
 step from an interrupted one:
 
-- `.devkit-copy-complete` — written after the file copy. Without it, an interrupted copy that
-  happened to land `package.json` and `nuxt.config.ts` would count as a host forever.
+- `.devkit-copy-complete` — written after the file copy, holding a content fingerprint of the
+  shipped host. Without the marker, an interrupted copy that happened to land `package.json`
+  and `nuxt.config.ts` would count as a host forever. Without the fingerprint, version-keying
+  would cover staleness only *between* releases: anyone changing `preview-host/` while the
+  version stands still — this repo's own developers included — silently kept running the copy
+  from before their change. A changed host re-copies without reinstalling, since the install is
+  keyed separately.
 - `.devkit-install-complete` — written after a successful `npm install`, holding a fingerprint
   of the dependency blocks it installed. Changed pins therefore reinstall.
+- `.devkit-install.lock` — held *during* `npm install`, created with the `wx` flag so
+  exclusivity comes from the filesystem rather than a check-then-write. Two repos previewing
+  for the first time after an upgrade both decide they need to install, into the same
+  directory. It records a pid, so a lock left by a killed process can be taken over instead of
+  wedging the cache forever.
+
+`previews/<pid>.json` is the same idea applied to running processes rather than steps: one
+file per live preview, recording repo, pid and both ports. It is what lets `preview` refuse a
+second run unless `--parallel` is given, name the preview already holding the directory, and
+refuse a `--force` reinstall that would swap `node_modules` out from under it. Dead entries
+are pruned on read, because a preview killed with SIGKILL never gets to deregister and a
+registry that only grew would refuse every future preview.
 
 ## Fidelity caveats
 

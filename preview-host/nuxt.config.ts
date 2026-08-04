@@ -16,6 +16,13 @@ export default defineNuxtConfig({
   // would serve the first one's app. `preview` therefore points each repo at its
   // own build dir; a manual `npm run dev` in here keeps the default.
   ...(process.env.DEVKIT_NUXT_BUILD_DIR ? { buildDir: process.env.DEVKIT_NUXT_BUILD_DIR } : {}),
+  // Every repo's build output sits side by side in this one directory, so each Nuxt
+  // instance can see the others'. Nuxt already ignores its OWN buildDir by default;
+  // it cannot know the siblings exist. Without them ignored, a second `preview`
+  // starting up makes this instance clear its module graph and force a full browser
+  // reload, because Vite spotted "a" tsconfig.json change (reloadOnTsconfigChange)
+  // — one that belonged to another repo entirely.
+  ignore: ['.nuxt-*', '.vite-*'],
   // SPA: no SSR, so the studio's browser-only composables (localStorage etc.)
   // behave exactly as in the real cockpit, and boot is fast.
   ssr: false,
@@ -24,7 +31,16 @@ export default defineNuxtConfig({
   // @solar-icons/nuxt provides the #solar-icons alias the studio components import.
   modules: ['@revenexx/studio-shared', '@solar-icons/nuxt', '@revenexx/studio-integrations'],
   css: ['~/assets/css/main.css'],
-  vite: { plugins: [tailwindcss()] },
+  vite: {
+    // Vite anchors its dependency cache on rootDir, so every repo previewing out of
+    // this shared directory used one `node_modules/.cache/vite`. Its configHash
+    // covers `resolve.alias`, which holds Nuxt's `#build` alias — i.e. the per-repo
+    // buildDir above — so two repos each judged the other's cache stale and `rm -rf`
+    // it mid-flight. `preview` therefore gives each repo its own cache dir too; a
+    // manual `npm run dev` in here keeps the default.
+    ...(process.env.DEVKIT_VITE_CACHE_DIR ? { cacheDir: process.env.DEVKIT_VITE_CACHE_DIR } : {}),
+    plugins: [tailwindcss()],
+  },
   runtimeConfig: {
     public: {
       // Overridden at runtime by NUXT_PUBLIC_* env, which the `preview` command

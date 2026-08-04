@@ -21,14 +21,15 @@ package — all relative defaults resolve against the current working directory.
 | `--seed <dir>` | `dev/seeds` | Committed seed directory. |
 | `--state <file>` | `.revenexx-dev/state.json` | Session overlay file. |
 | `--no-persist` | off | Keep everything in memory; never write the overlay. |
-| `--port <n>` | `$PORT`, else `3555` | Mock API listen port. |
+| `--port <n>` | `$PORT`, else `3555` | Mock API listen port. The **default** moves to the next free port when `3555` is taken and says so; an **explicit** `--port` (or `$PORT`) is honoured or reported as a conflict, never silently relocated. |
 | `--ui <dir>` | resolve the UI package | Serve a prebuilt static UI from this directory. |
 | `--no-ui` | off | Run API-only. |
 | `--open` | off | Open the preview in a browser. |
 | `--env <path>` | `.env` when present | Env file to load before seeds are applied, *instead of* `.env`. Needs Node >= 20.12. |
 | `--no-env` | off | Load no env file at all, not even `.env`. |
 | `--dir <path>` | the managed cache | Use this preview-host directory instead of the version-keyed cache. The copy becomes unmanaged — devkit upgrades will not touch it. Applies to `preview` and `init-preview`. |
-| `--force` | off | Re-copy the host even when the target looks complete, and reinstall its dependencies. Applies to `preview` and `init-preview`. |
+| `--force` | off | Re-copy the host even when the target looks complete, and reinstall its dependencies. Refused while a preview is running, since reinstalling would pull `node_modules` out from under it. Applies to `preview` and `init-preview`. |
+| `--parallel` | off | Run a second preview alongside one already running out of the same host directory. Without it, `preview` refuses and names the one it found. Applies to `preview`. |
 
 ## Where the preview host lives
 
@@ -41,16 +42,45 @@ ${XDG_CACHE_HOME:-~/.cache}/revenexx/devkit-preview/<devkit-version>/
 
 Keying on the devkit version means all your node packages share one dependency install,
 and an upgrade can never leave you on a stale host — a new version is simply a new
-directory. Old directories are not pruned automatically; delete them when you want the
-disk back.
+directory. A change to the shipped host re-copies even within one version, since the copy
+marker records a fingerprint of the source. Old directories are not pruned automatically;
+delete them when you want the disk back.
 
-The dependency install is shared, the **build is not**: each repo compiles into its own
-`.nuxt-<hash>/` inside that directory, so two packages can be previewed at the same time
-without building over each other.
+The dependency install is shared; everything a running Nuxt writes or watches is not. Each
+repo gets its own build dir (`.nuxt-<hash>/`), Vite dependency cache (`.vite-<hash>/`) and
+dotenv file (`.env.<hash>`), so two packages can be previewed at once without breaking each
+other. See [Architecture](architecture.md#what-is-shared-and-what-must-not-be) for why each
+of those matters.
+
+## Running two previews at once
+
+`preview` refuses to start a second time out of the same host directory and tells you which
+repo, pid and ports are holding it — usually a preview you forgot to stop:
+
+```
+A preview is already running out of /home/you/.cache/revenexx/devkit-preview/0.4.0:
+  mailer-node (PID 12345, mock :3555, UI :3000) — /home/you/repos/mailer-node
+
+Stop it (Ctrl-C in its terminal), or run this one alongside it with --parallel.
+```
+
+With `--parallel` both run: the second takes the next free ports (mock `3556`, UI `3001`)
+and lists what else is running. **Which UI talks to which mock is decided by the UI port you
+open** — each Nuxt process gets its own API URL, and browser state is separated because
+`localStorage` is scoped per origin, port included.
+
+The UI's URL is printed by Nuxt itself, not by devkit — Nuxt has the last word on the port
+it ended up with, so it is the one that announces it.
 
 For an unmanaged copy (`--dir`), the generated `.env` is written once and then left alone —
 it is yours to edit. `preview` passes the same values to Nuxt on every run regardless, so
-editing it only affects a manual `npm run dev` in that directory.
+editing it only affects a manual `npm run dev` in that directory. In the **managed** cache
+the dotenv file is per repo, so a manual run there needs its name:
+
+```bash
+cd ~/.cache/revenexx/devkit-preview/<version>
+npm run dev -- --dotenv .env.<hash>    # the name is in the file's own header comment
+```
 
 ## Common invocations
 

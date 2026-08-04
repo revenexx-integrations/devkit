@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CliError } from '../errors.js';
+import { type IsAlive, pidIsAlive } from './pid.js';
 
 /**
  * The Nuxt preview host ships as real files in the devkit package (`preview-host/`)
@@ -25,24 +27,38 @@ import { fileURLToPath } from 'node:url';
 const INSTALL_MARKER = '.devkit-install-complete';
 
 /**
- * Marker written after the file copy finished. Without it, "is the host here?"
- * would again be "do two filenames exist" — the same check whose weakness this
- * module exists to fix, only for the copy instead of the install: `cpSync` is not
- * atomic, so an interrupted copy can leave `package.json` and `nuxt.config.ts`
- * behind while the rest is missing, and that half-host would be treated as intact
- * forever.
+ * Marker written after the file copy finished, holding a fingerprint of the source
+ * it copied. Without it, "is the host here?" would again be "do two filenames
+ * exist" — the same check whose weakness this module exists to fix, only for the
+ * copy instead of the install: `cpSync` is not atomic, so an interrupted copy can
+ * leave `package.json` and `nuxt.config.ts` behind while the rest is missing, and
+ * that half-host would be treated as intact forever.
+ *
+ * The fingerprint covers the second half of the same problem. Keying the directory
+ * by devkit version makes a stale host impossible *between releases*, but says
+ * nothing while the version stands still — so anyone working on `preview-host/`
+ * itself, this repo's own developers included, silently kept running the copy from
+ * before their change. Comparing the source instead of trusting the version keeps
+ * that honest, and costs nothing: the dependency install is keyed separately, so a
+ * changed host file re-copies without reinstalling.
  */
 const COPY_MARKER = '.devkit-copy-complete';
+
+/** Lock held while `npm install` runs, so two repos cannot install over each other. */
+const INSTALL_LOCK = '.devkit-install.lock';
 
 /** Files generated into the target rather than shipped, since they carry runtime values. */
 const HOST_GITIGNORE = `node_modules/
 .nuxt/
 .nuxt-*/
+.vite-*/
 .output/
 .data/
-.env
+.env*
+previews/
 ${COPY_MARKER}
 ${INSTALL_MARKER}
+${INSTALL_LOCK}
 `;
 
 export interface HostDirOptions {
@@ -95,6 +111,11 @@ export interface MaterializeHostOptions {
   /** Re-copy even when the target already looks complete. */
   force?: boolean;
   /**
+   * Name of the generated dotenv file. Defaults to `.env`; `preview` passes a
+   * per-repo name for the managed cache (see {@link hostDotenvName}).
+   */
+  dotenvName?: string;
+  /**
    * True for the version-keyed cache directory devkit owns, false for a `--dir`
    * copy that belongs to the user. Decides two things: whether an incomplete copy
    * may be redone (safe when devkit owns the directory, destructive when the user
@@ -129,7 +150,11 @@ export function materializeHost(options: MaterializeHostOptions): MaterializeHos
   const source = options.sourceDir ?? shippedHostDir();
   const dir = resolve(options.targetDir);
   const managed = options.managed ?? false;
-  const intact = managed ? hostIsComplete(dir) : hostExists(dir);
+  // A `--dir` copy belongs to the user: "the defining files are present" has to be
+  // enough there, because a re-copy would overwrite their edits. The managed cache
+  // is devkit's, so it is held to the stricter test — finished, and copied from
+  // exactly this source.
+  const intact = managed ? hostIsComplete(dir) && copyIsCurrent(dir, source) : hostExists(dir);
   const alreadyIntact = intact && !options.force;
 
   if (!alreadyIntact) {
@@ -145,7 +170,7 @@ export function materializeHost(options: MaterializeHostOptions): MaterializeHos
     // at all, silently.
     rmSync(join(dir, COPY_MARKER), { force: true });
     cpSync(source, dir, { recursive: true, filter: src => !isInsideNodeModules(source, src) });
-    writeFileSync(join(dir, COPY_MARKER), `${new Date().toISOString()}\n`, 'utf-8');
+    writeFileSync(join(dir, COPY_MARKER), `${sourceFingerprint(source)}\n${new Date().toISOString()}\n`, 'utf-8');
     writeFileSync(join(dir, '.gitignore'), HOST_GITIGNORE, 'utf-8');
     log(`Preview host ready in ${dir}`);
   }
@@ -154,7 +179,13 @@ export function materializeHost(options: MaterializeHostOptions): MaterializeHos
   // directory is devkit's to maintain. Unmanaged: write it only when it is
   // missing — that copy is the user's, and `preview` passes the same values to
   // the Nuxt child process anyway, so a hand-edited `.env` stays theirs.
-  const envPath = join(dir, '.env');
+  //
+  // The managed name is per repo (`.env.<hash>`), and that is not cosmetic: Nuxt
+  // watches its dotenv file and does a full respawn when it changes, so a single
+  // shared `.env` rewritten on every run restarted every *other* preview running
+  // out of this directory. The dedupe is mtime-based, so identical content did not
+  // help. A per-repo filename ends the crossfire — instances only watch their own.
+  const envPath = join(dir, options.dotenvName ?? '.env');
   if (managed || !existsSync(envPath)) {
     writeFileSync(envPath, envFile(options), 'utf-8');
   }
@@ -168,14 +199,64 @@ function isInsideNodeModules(source: string, src: string): boolean {
   return rel !== '' && rel.split(sep).includes('node_modules');
 }
 
+/**
+ * Content hash of the shipped host, over paths and bytes. Deliberately not mtimes:
+ * reinstalling the devkit rewrites those without changing a thing, and a 500 MB
+ * cache directory should not be invalidated by a timestamp.
+ */
+function sourceFingerprint(source: string): string {
+  const hash = createHash('sha256');
+  for (const file of listFiles(source, source).sort()) {
+    hash.update(file);
+    hash.update(readFileSync(join(source, file)));
+  }
+  return hash.digest('hex').slice(0, 16);
+}
+
+function listFiles(root: string, dir: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === 'node_modules') {
+      continue;
+    }
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...listFiles(root, full));
+    } else if (entry.isFile()) {
+      files.push(relative(root, full));
+    }
+  }
+  return files;
+}
+
+/** True when the copy in `dir` was made from this exact source. */
+function copyIsCurrent(dir: string, source: string): boolean {
+  try {
+    const recorded = readFileSync(join(dir, COPY_MARKER), 'utf-8').split('\n')[0]?.trim();
+    return recorded === sourceFingerprint(source);
+  } catch {
+    return false;
+  }
+}
+
 function envFile(options: MaterializeHostOptions): string {
+  const name = options.dotenvName ?? '.env';
+  const manual = name === '.env' ? 'npm run dev' : `npm run dev -- --dotenv ${name}`;
   return `# Generated by integrations-devkit — overrides the Nuxt runtimeConfig.public.* values.
 # The \`preview\` command also passes these to the Nuxt child process; this file is
-# what makes a manual \`npm run dev\` in this directory work.
+# what makes a manual \`${manual}\` in this directory work.
 NUXT_PUBLIC_INTEGRATIONS_API=${options.integrationsApiUrl}
 NUXT_PUBLIC_DEV_TOKEN=${options.devToken ?? 'dev'}
 NUXT_PUBLIC_DEV_TENANT=${options.devTenant ?? 'dev-tenant'}
 `;
+}
+
+/**
+ * Stable per-repo key. One host directory serves every node package on the machine,
+ * so everything that must not be shared is suffixed with this.
+ */
+function consumerKey(consumerDir: string): string {
+  return createHash('sha256').update(consumerDir).digest('hex').slice(0, 12);
 }
 
 /**
@@ -185,10 +266,42 @@ NUXT_PUBLIC_DEV_TENANT=${options.devTenant ?? 'dev-tenant'}
  * `preview` concurrently would otherwise build into the same `.nuxt/` and serve
  * each other's app. Keyed by a hash of the consumer's directory so it is stable
  * across runs — the build cache still pays off — and distinct per repo.
+ *
+ * Necessary but **not sufficient** on its own, and for a while it was worse than
+ * that: see {@link hostViteCacheDir}.
  */
 export function hostBuildDir(hostDir: string, consumerDir: string): string {
-  const key = createHash('sha256').update(consumerDir).digest('hex').slice(0, 12);
-  return join(hostDir, `.nuxt-${key}`);
+  return join(hostDir, `.nuxt-${consumerKey(consumerDir)}`);
+}
+
+/**
+ * Per-consumer Vite dependency cache inside the shared host.
+ *
+ * Vite anchors its `cacheDir` on `rootDir`, not on the build dir, so every repo
+ * previewing out of this directory shared one `node_modules/.cache/vite`. That
+ * would have been merely wasteful were it not for how Vite invalidates it: the
+ * `configHash` covers `resolve.alias`, which contains Nuxt's `#build` alias, which
+ * is the per-repo build dir. Two repos therefore each computed a different hash,
+ * each judged the other's cache stale, and each ran `rm -rf` on the dependency
+ * directory the other was actively serving from — every time, in both directions,
+ * until one of them was killed.
+ *
+ * Overriding `cacheDir` per repo is what actually isolates them. It also pays off
+ * sequentially: switching between repos no longer re-optimizes from scratch.
+ */
+export function hostViteCacheDir(hostDir: string, consumerDir: string): string {
+  return join(hostDir, `.vite-${consumerKey(consumerDir)}`);
+}
+
+/**
+ * Per-consumer dotenv filename inside the shared host.
+ *
+ * Nuxt watches its dotenv file and treats a change as a reason to respawn, so one
+ * shared `.env` — rewritten on every run, because it carries the mock's port —
+ * restarted every other preview using this directory.
+ */
+export function hostDotenvName(consumerDir: string): string {
+  return `.env.${consumerKey(consumerDir)}`;
 }
 
 /** True when `dir` holds something that looks like a host (its two defining files). */
@@ -234,6 +347,83 @@ export function markHostInstalled(dir: string): void {
 /** Clears the install marker so the next run reinstalls. */
 export function clearHostInstallMarker(dir: string): void {
   rmSync(join(dir, INSTALL_MARKER), { force: true });
+}
+
+/**
+ * Runs `install` with an exclusive lock on the host directory.
+ *
+ * `npm install` in a directory another npm is installing into is a good way to end
+ * up with a half-written dependency tree, and the shared cache makes that a normal
+ * occurrence rather than an exotic one: two repos previewing for the first time
+ * after a devkit upgrade both decide they need to install.
+ *
+ * The lock is a file created with `wx` — the exclusivity comes from the filesystem,
+ * not from a check-then-write. It records a pid so a lock left behind by a killed
+ * process can be identified and taken over, which matters because the alternative
+ * is a cache directory that refuses to install ever again.
+ *
+ * `needsInstall` is re-checked while holding the lock: after waiting behind another
+ * process, the install we were queuing for has usually already done the work.
+ */
+export async function withInstallLock<T>(
+  dir: string,
+  install: () => Promise<T>,
+  options: { needsInstall?: () => boolean; isAlive?: IsAlive; log?: (msg: string) => void; timeoutMs?: number; pollMs?: number } = {},
+): Promise<T | null> {
+  const isAlive = options.isAlive ?? pidIsAlive;
+  const log = options.log ?? (() => {});
+  const timeoutMs = options.timeoutMs ?? 20 * 60_000;
+  const pollMs = options.pollMs ?? 500;
+  const lockPath = join(dir, INSTALL_LOCK);
+  const deadline = Date.now() + timeoutMs;
+  let waitingFor: number | null = null;
+
+  while (!acquire(lockPath)) {
+    const holder = lockHolder(lockPath);
+    if (holder === null || !isAlive(holder)) {
+      // The holder is gone; the lock can never be released by anyone else.
+      rmSync(lockPath, { force: true });
+      continue;
+    }
+    if (holder !== waitingFor) {
+      waitingFor = holder;
+      log(`Another devkit (PID ${holder}) is installing the preview host's dependencies — waiting for it to finish…`);
+    }
+    if (Date.now() > deadline) {
+      throw new CliError(`Timed out after ${Math.round(timeoutMs / 60_000)} min waiting for PID ${holder} to finish installing in ${dir}. If that process is gone, delete ${lockPath}.`);
+    }
+    await new Promise(done => setTimeout(done, pollMs));
+  }
+
+  try {
+    if (options.needsInstall && !options.needsInstall()) {
+      return null;
+    }
+    return await install();
+  } finally {
+    rmSync(lockPath, { force: true });
+  }
+}
+
+/** True when the lock was created by us. `wx` fails if the file already exists. */
+function acquire(lockPath: string): boolean {
+  try {
+    mkdirSync(dirname(lockPath), { recursive: true });
+    writeFileSync(lockPath, `${process.pid}\n${new Date().toISOString()}\n`, { encoding: 'utf-8', flag: 'wx' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function lockHolder(lockPath: string): number | null {
+  try {
+    const pid = Number.parseInt(readFileSync(lockPath, 'utf-8').split('\n')[0] ?? '', 10);
+    return Number.isInteger(pid) ? pid : null;
+  } catch {
+    // Vanished between the failed acquire and this read — treat as unheld.
+    return null;
+  }
 }
 
 /**
