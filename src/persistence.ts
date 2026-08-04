@@ -28,7 +28,16 @@ export interface SecretSeed {
 
 export interface WorkflowSeed {
   name: string;
-  definition: Record<string, unknown>;
+  /** The workflow graph, named as the service names it. */
+  blob?: Record<string, unknown>;
+  /**
+   * @deprecated The mock called this `definition` before it was aligned to the
+   * service contract. Still accepted so existing seed files keep working.
+   */
+  definition?: Record<string, unknown>;
+  description?: string | null;
+  active?: boolean;
+  executionMode?: string;
 }
 
 export interface DevSeeds {
@@ -85,7 +94,14 @@ export function applySeeds(store: DevStore, seeds: DevSeeds, env: NodeJS.Process
     });
   }
   for (const workflow of seeds.workflows ?? []) {
-    store.createWorkflow(interpolateEnv(workflow, env));
+    const resolved = interpolateEnv(workflow, env);
+    store.createWorkflow({
+      name: resolved.name,
+      blob: resolved.blob ?? resolved.definition ?? {},
+      description: resolved.description,
+      active: resolved.active,
+      executionMode: resolved.executionMode,
+    });
   }
 }
 

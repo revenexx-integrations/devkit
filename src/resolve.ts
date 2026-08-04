@@ -351,6 +351,101 @@ export async function validateNodeConfig(loaded: LoadedPackage, store: DevStore,
   return { valid: Object.keys(errors).length === 0, errors };
 }
 
+export interface ExecuteNodeTestInput {
+  slug: string;
+  version?: string;
+  /** The node's config values to run with. */
+  config: Record<string, unknown>;
+  /** Simulated input payloads, merged OVER the config (the contract's wording). */
+  inputs: Record<string, unknown>;
+  /** Wall-clock limit; clamped to >= 1000 ms like the real runtime. */
+  timeoutMs?: number;
+}
+
+export interface ExecuteNodeTestResult {
+  outputs: Record<string, unknown>;
+  branch: string | null;
+  logs: Array<{ level: string; message: string; meta?: Record<string, unknown> }>;
+}
+
+/** Floor the contract puts on `timeout_ms`, and the default when none is given. */
+const MIN_TIMEOUT_MS = 1000;
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+/** Thrown by the timeout arm of the race; never leaves `executeNodeTest`. */
+class ExecuteTimeout extends Error {}
+
+/**
+ * Runs a node's real `execute` in-process — the closest the mock gets to the
+ * production sandbox, and the endpoint node authors care about most.
+ *
+ * `execute(ctx, inputs)` takes a single merged object, so `config` and `inputs`
+ * are merged here with `inputs` winning, matching how the service describes it.
+ * Logger calls are collected and returned as `logs` instead of being dropped.
+ *
+ * The timeout is enforced by racing, not just by aborting `ctx.signal`. A node
+ * that never looks at the signal — an accidental infinite loop's `await`, a
+ * third-party client that takes no `AbortSignal` — would otherwise hang the
+ * request until Node's own 300 s `requestTimeout`, which is the opposite of what
+ * "honours timeout_ms" should mean for someone debugging their own node. The
+ * signal is still aborted first, so a well-behaved node fails fast and its own
+ * error wins the race.
+ */
+export async function executeNodeTest(loaded: LoadedPackage, store: DevStore, input: ExecuteNodeTestInput): Promise<ExecuteNodeTestResult> {
+  const node = findNode(loaded, input.slug, input.version);
+  const logs: ExecuteNodeTestResult['logs'] = [];
+  const record = (level: string) => (message: string, meta?: Record<string, unknown>) => {
+    logs.push(meta === undefined ? { level, message } : { level, message, meta });
+  };
+
+  const timeoutMs = Math.max(MIN_TIMEOUT_MS, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new ExecuteTimeout());
+    }, timeoutMs);
+  });
+
+  const ctx = {
+    signal: controller.signal,
+    logger: { info: record('info'), warn: record('warn'), error: record('error') },
+    secrets: {
+      async get(key: string): Promise<string> {
+        const secret = store.getSecret(key);
+        if (!secret) {
+          throw new DevApiError(404, `Secret '${key}' not found.`);
+        }
+        return secret.value;
+      },
+    },
+    credentials: {
+      async get(id: string): Promise<Record<string, unknown>> {
+        return (await resolveCredentialInstance(loaded, store, id)).credentials;
+      },
+    },
+  };
+
+  try {
+    const result = await Promise.race([node.execute(ctx, { ...input.config, ...input.inputs }), expired]);
+    return { outputs: result.outputs ?? {}, branch: result.branch ?? null, logs };
+  } catch (err) {
+    if (err instanceof DevApiError) {
+      throw err;
+    }
+    // The node itself threw, or the race expired. 502 mirrors how the mock reports a
+    // failing author-time resolver, and the collected logs go along so the failure is
+    // diagnosable — a timeout in particular is usually only readable from the logs
+    // the node managed to emit before it stalled.
+    const reason = err instanceof ExecuteTimeout || controller.signal.aborted ? `timed out after ${timeoutMs} ms` : (err as Error).message;
+    throw new DevApiError(502, `Node execution failed: ${reason}`, { logs: logs.map(l => `${l.level}: ${l.message}`) });
+  } finally {
+    // Also stops the timer from holding the event loop open when the node won.
+    clearTimeout(timer);
+  }
+}
+
 /** Runs a credential type's `test` against inline (unsaved) config. */
 export async function testCredentialConfig(loaded: LoadedPackage, store: DevStore, typeSlug: string, config: Record<string, unknown>): Promise<ICredentialTestResult> {
   const cred = findCredential(loaded, typeSlug);

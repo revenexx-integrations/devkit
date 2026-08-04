@@ -1,0 +1,22 @@
+/* Tailwind v4 wiring per @revenexx/studio's README. The @source globs are
+   relative to THIS file (../../ is the host root); they tell Tailwind's JIT to
+   scan the shipped component classes of studio + studio-shared +
+   studio-integrations, or those components render unstyled.
+   Note: tw-animate-css is deliberately NOT imported — it is not installed. */
+@import "tailwindcss";
+@import "@revenexx/studio/tokens";
+@import "@revenexx/studio/fonts";
+
+@source "../../node_modules/@revenexx/studio/dist";
+@source "../../node_modules/@revenexx/studio-shared/components";
+@source "../../node_modules/@revenexx/studio-integrations/dist/runtime";
+
+/* Phase 1: workflow EXECUTION is not wired up in the devkit preview yet, so the
+   Workflows surface is hidden until phase 2. This hides the sidebar nav entry
+   and any deep links to the workflow editor; the routes are also redirected by
+   middleware/hide-workflows.global.ts. Hiding has to happen host-side because
+   studio-integrations' Sidebar nav items are hardcoded with no module option to
+   suppress them. To re-enable in phase 2, drop these two rules and the
+   middleware. */
+a[href^="/integrations/workflows"] { display: none !important; }
+li:has(> a[href^="/integrations/workflows"]) { display: none !important; }

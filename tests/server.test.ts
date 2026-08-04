@@ -1,96 +1,8 @@
 import type { AddressInfo } from 'node:net';
-import type {
-  IConfigField,
-  IConfigOption,
-  ICredential,
-  ICredentialContext,
-  ICredentialResolveResult,
-  ICredentialTestResult,
-  INode,
-  INodeAuthorContext,
-  INodeContext,
-  INodeResult,
-  IOutputPort,
-  ITemplateDescription,
-} from '@revenexx/integrations-node-sdk';
+import type { IOutputPort } from '@revenexx/integrations-node-sdk';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDevServer, DevStore, resolveExports } from '../src/index.js';
-
-/** A node exercising all three author-time resolvers + a secret-ref field. */
-class PlaygroundNode implements INode {
-  description = {
-    slug: 'devkit:playground',
-    version: '1.0.0',
-    category: 'action' as const,
-    name: 'Playground',
-    inputs: {},
-    outputs: [{ kind: 'branch' as const, dataType: 'any' as const, resolveOutputs: true }],
-    config: [
-      { key: 'category', label: 'Category', type: 'select' as const, dynamic: true },
-      { key: 'params', label: 'Params', type: 'dynamic-schema' as const, dependsOn: ['category'] },
-      { key: 'secretName', label: 'Secret', type: 'secret-ref' as const },
-    ],
-  };
-
-  async execute(_ctx: INodeContext, _inputs: Record<string, unknown>): Promise<INodeResult> {
-    return { outputs: {} };
-  }
-
-  async loadOptions(ctx: INodeAuthorContext, fieldKey: string): Promise<IConfigOption[]> {
-    if (fieldKey !== 'category') {
-      return [];
-    }
-    // Prove secret plumbing when a secret-ref is set.
-    const suffix = ctx.config.secretName ? await ctx.secrets.get(String(ctx.config.secretName)) : '';
-    return [
-      { value: 'orders', label: `Orders${suffix ? ` (${suffix})` : ''}` },
-      { value: 'customers', label: 'Customers' },
-    ];
-  }
-
-  async resolveConfigSchema(ctx: INodeAuthorContext): Promise<IConfigField[]> {
-    return [{ key: `${ctx.config.category ?? 'none'}_id`, label: 'Id', type: 'string', required: true }];
-  }
-
-  async resolveOutputs(_ctx: INodeAuthorContext): Promise<IOutputPort[]> {
-    return [
-      { kind: 'branch', dataType: 'any', name: 'matched' },
-      { kind: 'branch', dataType: 'any', name: 'default' },
-    ];
-  }
-}
-
-class StaticCredential implements ICredential {
-  description = {
-    slug: 'devkit:basic',
-    version: '1.0.0',
-    name: 'Basic',
-    authKind: 'static' as const,
-    fields: [
-      { key: 'host', label: 'Host', type: 'string' as const },
-      { key: 'password', label: 'Password', type: 'secret' as const },
-    ],
-  };
-
-  async test(_ctx: ICredentialContext, config: Record<string, unknown>): Promise<ICredentialTestResult> {
-    return { ok: typeof config.host === 'string' && config.host.length > 0 };
-  }
-
-  async resolve(_ctx: ICredentialContext, config: Record<string, unknown>): Promise<ICredentialResolveResult> {
-    return { credentials: { ...config } };
-  }
-}
-
-const template: ITemplateDescription = {
-  slug: 'devkit:starter',
-  version: '1.0.0',
-  category: 'sales',
-  level: 'beginner',
-  name: 'Starter',
-  blobVersion: 'v0-draft',
-  definition: { nodes: [], edges: [] },
-  triggers: [{ handle: 'trig-1', type: 'manual' }],
-};
+import { PlaygroundNode, StaticCredential, template } from './fixtures/package.js';
 
 const loaded = resolveExports({
   NODES: [new PlaygroundNode()],
@@ -153,6 +65,43 @@ describe('nodes catalogue', () => {
   });
 });
 
+describe('execute:test (runs the real execute in-process)', () => {
+  it('returns the outputs, branch and collected logs', async () => {
+    const { status, body } = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      config: { category: 'orders' },
+      inputs: { extra: 1 },
+    });
+    expect(status).toBe(200);
+    // inputs are merged OVER config, per the contract's wording.
+    expect(body).toMatchObject({ outputs: { echoed: { category: 'orders', extra: 1 } }, branch: 'matched' });
+    expect(body.logs).toEqual([{ level: 'info', message: 'executing playground', meta: { keys: ['category', 'extra'] } }]);
+  });
+
+  it('reports a throwing node as 502 with the logs it managed to emit', async () => {
+    const { status, body } = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', { inputs: { boom: true } });
+    expect(status).toBe(502);
+    expect(body.message).toContain('boom');
+    expect(body.errors.logs).toEqual(['info: executing playground']);
+  });
+
+  /**
+   * The node here never consults `ctx.signal`, so aborting the signal cannot stop
+   * it — only the race can. Without enforcement the request hangs until Node's
+   * 300 s `requestTimeout`, and `timeout_ms` is a promise the mock does not keep.
+   */
+  it('enforces the timeout even when the node ignores ctx.signal', async () => {
+    const started = Date.now();
+    const { status, body } = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { hang: true },
+      // Below the contract's 1000 ms floor on purpose — it must be clamped up.
+      timeout_ms: 10,
+    });
+    expect(status).toBe(502);
+    expect(body.message).toContain('timed out after 1000 ms');
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1000);
+  });
+});
+
 describe('config:resolve (in-process, real node code)', () => {
   it('resolves dynamic options for a field', async () => {
     const { status, body } = await send('POST', '/nodes/devkit:playground/1.0.0/config:resolve', {
@@ -201,9 +150,12 @@ describe('credentials', () => {
     expect(created.body.public_config).toEqual({ host: 'mail.test' });
     expect(created.body.public_config.password).toBeUndefined();
 
+    // Testing a SAVED credential records the outcome and reports it back, per the
+    // contract; the inline variant (POST /credentials/test) returns a bare `{ ok }`.
     const id = created.body.id;
     const test = await send('POST', `/credentials/${id}/test`);
-    expect(test.body).toEqual({ ok: true });
+    expect(test.body).toMatchObject({ ok: true, message: null, last_test_ok: true });
+    expect(typeof test.body.last_test_at).toBe('string');
 
     const list = await get('/credentials?type=devkit:basic');
     expect(list.body.data).toHaveLength(1);
@@ -235,9 +187,26 @@ describe('templates + workflows + schemas', () => {
     expect(triggers.body.data[0].type).toBe('manual');
   });
 
-  it('serves vendored schemas and 404s unknown routes', async () => {
-    expect((await get('/schemas/node/v0-draft')).body).toEqual({ $id: 'node/v0-draft' });
-    expect((await get('/schemas/node')).body).toEqual({ $id: 'node' });
+  it('serves vendored schemas in the contract envelopes and 404s unknown routes', async () => {
+    // The two routes have different shapes: /{domain} lists versions, while
+    // /{domain}/{version} wraps the schema. The mock served the bare schema at
+    // both until it was aligned to contract/integrations-v1.json.
+    expect((await get('/schemas/node/v0-draft')).body).toEqual({
+      domain: 'node',
+      version: 'v0-draft',
+      schema: { $id: 'node/v0-draft' },
+    });
+    expect((await get('/schemas/node')).body).toEqual({ domain: 'node', versions: ['v0-draft'] });
+    expect((await get('/schemas/nope')).status).toBe(404);
     expect((await get('/nope')).status).toBe(404);
+  });
+
+  /**
+   * A known domain with an unknown version must 404, not fall back to the latest
+   * schema. Answering 200 there tells an author their version exists and hands
+   * them a different document than the one they asked for.
+   */
+  it('404s an unknown version of a known schema domain', async () => {
+    expect((await get('/schemas/node/v99-nope')).status).toBe(404);
   });
 });

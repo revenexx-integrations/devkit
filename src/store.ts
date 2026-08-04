@@ -19,6 +19,10 @@ export interface CredentialRecord {
   config: Record<string, unknown>;
   /** System-managed long-lived secrets (e.g. an OAuth refresh token). */
   durableCreds: Record<string, unknown> | null;
+  /** Outcome of the last `POST /credentials/{id}/test`, which the contract reports. */
+  lastTestAt: string | null;
+  lastTestOk: boolean | null;
+  lastTestMessage: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -30,14 +34,32 @@ export interface SecretRecord {
   updatedAt: string;
 }
 
+/**
+ * Field names follow the service's contract: the graph is `blob`, tagged with the
+ * `blob_definition_version` it was written against. The mock used to call it
+ * `definition`, which meant a workflow saved from the real UI silently lost its
+ * graph — the UI sends `blob`, so `body.definition` was always undefined.
+ */
 export interface WorkflowRecord {
   id: number;
   name: string;
-  definition: Record<string, unknown>;
+  description: string | null;
+  blob: Record<string, unknown>;
+  blobDefinitionVersion: string;
+  active: boolean;
+  executionMode: string;
+  /** Bumped on every update, like the service's revision counter. */
+  revision: number;
   buildStatus: string;
   createdAt: string;
   updatedAt: string;
 }
+
+/** The only `blob_definition_version` the contract currently allows. */
+export const BLOB_DEFINITION_VERSION = 'v0-draft';
+
+/** `execution_mode` values the contract allows; the first is the default. */
+export const EXECUTION_MODES = ['async_only', 'sync_only', 'caller_decides'] as const;
 
 export interface TriggerRecord {
   id: string;
@@ -59,7 +81,13 @@ export interface DevStoreSnapshot {
   nextWorkflowId: number;
 }
 
-export const STORE_SCHEMA_VERSION = 1;
+/**
+ * Bumped to 2 when workflows moved from `definition` to the contract's `blob` /
+ * `blob_definition_version` / `active` / `execution_mode`. `loadState` discards an
+ * overlay whose version does not match, which is the migration: seeds are the
+ * source of truth, the overlay is disposable session state.
+ */
+export const STORE_SCHEMA_VERSION = 2;
 
 function now(): string {
   return new Date().toISOString();
@@ -116,6 +144,9 @@ export class DevStore {
       status: input.status ?? 'active',
       config: input.config,
       durableCreds: input.durableCreds ?? null,
+      lastTestAt: null,
+      lastTestOk: null,
+      lastTestMessage: null,
       createdAt: ts,
       updatedAt: ts,
     };
@@ -142,6 +173,22 @@ export class DevStore {
       record.durableCreds = patch.durableCreds;
     }
     record.updatedAt = now();
+    this.touch();
+    return record;
+  }
+
+  /**
+   * Records the outcome of a credential test. The service persists this on the
+   * record and reports it back from `POST /credentials/{id}/test`.
+   */
+  recordCredentialTest(id: string, result: { ok: boolean; message?: string | null }): CredentialRecord | undefined {
+    const record = this.credentials.get(id);
+    if (!record) {
+      return undefined;
+    }
+    record.lastTestAt = now();
+    record.lastTestOk = result.ok;
+    record.lastTestMessage = result.message ?? null;
     this.touch();
     return record;
   }
@@ -196,12 +243,24 @@ export class DevStore {
     return this.workflows.get(id);
   }
 
-  createWorkflow(input: { name: string; definition: Record<string, unknown> }): WorkflowRecord {
+  createWorkflow(input: {
+    name: string;
+    blob: Record<string, unknown>;
+    blobDefinitionVersion?: string;
+    description?: string | null;
+    active?: boolean;
+    executionMode?: string;
+  }): WorkflowRecord {
     const ts = now();
     const record: WorkflowRecord = {
       id: this.nextWorkflowId++,
       name: input.name,
-      definition: input.definition,
+      description: input.description ?? null,
+      blob: input.blob,
+      blobDefinitionVersion: input.blobDefinitionVersion ?? BLOB_DEFINITION_VERSION,
+      active: input.active ?? true,
+      executionMode: input.executionMode ?? EXECUTION_MODES[0],
+      revision: 1,
       buildStatus: 'ready',
       createdAt: ts,
       updatedAt: ts,
@@ -211,12 +270,14 @@ export class DevStore {
     return record;
   }
 
-  updateWorkflow(id: number, patch: Partial<Pick<WorkflowRecord, 'name' | 'definition' | 'buildStatus'>>): WorkflowRecord | undefined {
+  updateWorkflow(id: number, patch: Partial<Pick<WorkflowRecord, 'name' | 'description' | 'blob' | 'blobDefinitionVersion' | 'active' | 'executionMode' | 'buildStatus'>>): WorkflowRecord | undefined {
     const record = this.workflows.get(id);
     if (!record) {
       return undefined;
     }
-    Object.assign(record, patch, { updatedAt: now() });
+    // Drop undefined so a partial PUT does not blank fields the caller omitted.
+    const defined = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+    Object.assign(record, defined, { revision: record.revision + 1, updatedAt: now() });
     this.touch();
     return record;
   }

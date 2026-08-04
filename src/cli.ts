@@ -2,14 +2,18 @@
 /**
  * `integrations-devkit` — local mock Integrations API + preview for a node package.
  *
- *   integrations-devkit                # start the mock API (+ static UI via --ui)
- *   integrations-devkit preview        # scaffold+install+run the Nuxt host together with the mock
- *   integrations-devkit init-preview   # only scaffold the Nuxt preview host
- *   integrations-devkit reset          # delete the persisted session overlay
+ *   integrations-devkit                     # start the mock API (+ static UI via --ui)
+ *   integrations-devkit preview             # run the Nuxt host together with the mock
+ *   integrations-devkit init-preview --dir  # take an unmanaged copy of the host to hack on
+ *   integrations-devkit reset               # delete the persisted session overlay
+ *
+ * The preview host is NOT placed in your repo. It is copied into a version-keyed
+ * cache directory (see src/preview/host.ts), so every repo on this machine shares
+ * one dependency install and a devkit upgrade can never leave a stale host behind.
  *
  * Options:
- *   --dir <path>     preview host dir (default: .revenexx-dev/preview)
- *   --force          overwrite existing scaffold files
+ *   --dir <path>     use this host dir instead of the managed cache (unmanaged)
+ *   --force          re-copy the host even if the target looks complete
  *   --entry <path>   package entry (default: src/index.ts, else dist/index.js)
  *   --seed <dir>     committed seeds dir (default: dev/seeds)
  *   --state <file>   session overlay file (default: .revenexx-dev/state.json)
@@ -30,9 +34,9 @@ import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from './env.js';
 import { DEVKIT_VERSION } from './index.js';
-import { type LoadedPackage, loadPackageFromEntry } from './loader.js';
+import { isReloadableSource, type LoadedPackage, loadPackageFromEntry } from './loader.js';
 import { applySeeds, loadSeedsFromDir, loadState, saveState } from './persistence.js';
-import { previewDepsInstalled, previewExists, scaffoldPreview } from './preview/scaffold.js';
+import { clearHostInstallMarker, hostBuildDir, hostNeedsInstall, markHostInstalled, materializeHost, resolveHostDir } from './preview/host.js';
 import { createRequestListener } from './server.js';
 import { DevStore } from './store.js';
 
@@ -45,9 +49,9 @@ interface CliOptions {
   uiDir: string | null;
   serveUi: boolean;
   open: boolean;
-  /** Preview host directory (default `.revenexx-dev/preview`). */
-  previewDir: string;
-  /** Overwrite existing scaffold files. */
+  /** Explicit host directory from `--dir`; null means use the managed cache. */
+  previewDir: string | null;
+  /** Re-copy the host even when the target looks complete. */
   force: boolean;
 }
 
@@ -62,7 +66,7 @@ function parseArgs(argv: string[]): { command: string | null; options: CliOption
     uiDir: null,
     serveUi: true,
     open: false,
-    previewDir: resolve(cwd, '.revenexx-dev/preview'),
+    previewDir: null,
     force: false,
   };
   let command: string | null = null;
@@ -323,7 +327,7 @@ function watchAndReload(entry: string, onChange: () => void): (() => void) | und
   let timer: NodeJS.Timeout | undefined;
   try {
     const watcher = watch(dir, { recursive: true }, (_event, file) => {
-      if (file && /\.[cm]?tsx?$|\.js$/.test(file.toString())) {
+      if (file && isReloadableSource(file.toString())) {
         clearTimeout(timer);
         timer = setTimeout(onChange, 200);
       }
@@ -346,17 +350,47 @@ async function runNpmInstall(dir: string): Promise<void> {
   });
 }
 
-/** Scaffolds (if needed), installs, and runs the Nuxt preview host + the mock together. */
-async function preview(options: CliOptions): Promise<void> {
-  const dir = options.previewDir;
-  const apiUrl = `http://localhost:${options.port}/api/v1`;
-
-  if (!previewExists(dir) || options.force) {
-    scaffoldPreview({ dir, integrationsApiUrl: apiUrl, force: options.force, log: msg => console.log(msg) });
+/**
+ * Warns about a `.revenexx-dev/preview` left over from before the host moved into
+ * the shared cache. Not deleted automatically — it is the user's directory, and it
+ * may hold edits they want to keep.
+ */
+function noteLegacyPreviewDir(): void {
+  const legacy = resolve(process.cwd(), '.revenexx-dev/preview');
+  if (existsSync(legacy)) {
+    console.log(`Note: ${legacy} is no longer used — the preview host now lives in a shared cache. You can delete it to reclaim the space.`);
   }
-  if (!previewDepsInstalled(dir)) {
-    console.log('Installing preview-host dependencies (first run — this pulls Nuxt + the studio packages and may take a while)…');
+}
+
+/** Materializes (if needed), installs, and runs the Nuxt preview host + the mock together. */
+async function preview(options: CliOptions): Promise<void> {
+  const apiUrl = `http://localhost:${options.port}/api/v1`;
+  const managed = options.previewDir === null;
+  const targetDir = options.previewDir ?? resolveHostDir({ version: DEVKIT_VERSION });
+
+  noteLegacyPreviewDir();
+  const { dir } = materializeHost({
+    targetDir,
+    integrationsApiUrl: apiUrl,
+    force: options.force,
+    managed,
+    log: msg => console.log(msg),
+  });
+  if (managed) {
+    console.log(`  Host (devkit ${DEVKIT_VERSION}, shared across repos)  ${dir}`);
+  }
+
+  if (options.force) {
+    // `hostNeedsInstall` already reinstalls when the pins changed, so this is not
+    // that case — it is the escape hatch --force is documented to be: an install
+    // that reported success but left an unusable tree has no other way out short
+    // of deleting the directory.
+    clearHostInstallMarker(dir);
+  }
+  if (hostNeedsInstall(dir)) {
+    console.log('Installing preview-host dependencies (this pulls Nuxt + the studio packages and may take a while)…');
     await runNpmInstall(dir);
+    markHostInstalled(dir);
   }
 
   const mock = await startMock({ ...options, serveUi: false });
@@ -372,6 +406,9 @@ async function preview(options: CliOptions): Promise<void> {
       NUXT_PUBLIC_INTEGRATIONS_API: apiUrl,
       NUXT_PUBLIC_DEV_TOKEN: process.env.NUXT_PUBLIC_DEV_TOKEN ?? 'dev',
       NUXT_PUBLIC_DEV_TENANT: process.env.NUXT_PUBLIC_DEV_TENANT ?? 'dev-tenant',
+      // Keep the shared host's dependency install shared but its BUILD per repo,
+      // so two node packages previewing at once do not compile over each other.
+      DEVKIT_NUXT_BUILD_DIR: hostBuildDir(dir, process.cwd()),
     },
   });
 
@@ -414,13 +451,23 @@ async function main(): Promise<void> {
     return;
   }
   if (command === 'init-preview') {
-    scaffoldPreview({
-      dir: options.previewDir,
+    // The managed host is a disposable artifact `preview` handles on its own, so
+    // this command only makes sense for taking a copy you intend to change.
+    if (options.previewDir === null) {
+      console.error('init-preview needs an explicit target: `integrations-devkit init-preview --dir ./my-preview`.');
+      console.error('It exists to give you an UNMANAGED copy of the preview host to modify. For the normal preview, just run `integrations-devkit preview` —');
+      console.error('that materializes the host into a shared cache and keeps it in step with the devkit version.');
+      process.exit(1);
+    }
+    const { dir } = materializeHost({
+      targetDir: options.previewDir,
       integrationsApiUrl: `http://localhost:${options.port}/api/v1`,
       force: options.force,
       log: msg => console.log(msg),
     });
-    console.log(`\nNext: \`integrations-devkit preview\` (installs deps + starts mock + Nuxt), or \`cd ${options.previewDir} && npm install && npm run dev\`.`);
+    console.log('\nThis copy is yours and will NOT be updated by devkit upgrades.');
+    console.log(`Run it with: \`cd ${dir} && npm install && npm run dev\` (plus \`integrations-devkit --no-ui\` for the mock),`);
+    console.log(`or \`integrations-devkit preview --dir ${dir}\` to have both started for you.`);
     return;
   }
   if (command === 'preview') {

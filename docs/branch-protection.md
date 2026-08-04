@@ -154,14 +154,16 @@ release.
 
 [`dependabot.yml`](../.github/dependabot.yml) is taken from the SDK: weekly npm
 and github-actions updates, devDependencies grouped, production minor/patch
-grouped, majors separate. No `registries:` section is needed — devkit's own
-dependencies are all public npm (`tsx`, plus the peers
-`@revenexx/integrations-node-sdk` and `vitest`).
+grouped, majors separate. No `registries:` section is needed — all dependencies
+come from public npm (`tsx`, the peers `@revenexx/integrations-node-sdk` and
+`vitest`, and the `@revenexx/studio-*` packages of the preview host, which are
+public despite what an earlier version of this page claimed).
 
-> **Blind spot:** the private `@revenexx/studio-*` pins live in
-> `src/preview/templates.ts` (the generated Nuxt-host package.json), not in this
-> repo's `package.json`. Dependabot cannot see or bump them — the studio peer set
-> stays a manual bump.
+A third `npm` entry covers `/preview-host`, the Nuxt host's own project. Until
+0.2.2 that dependency set was invisible to Dependabot because it existed only as
+string literals in `src/preview/templates.ts`; now that it is a real
+`package.json`, the studio set is bumped automatically and `tests/contract.test.ts`
+decides on the PR whether the mock still satisfies the new API.
 
 ## Repository security features
 
