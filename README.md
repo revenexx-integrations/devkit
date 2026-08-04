@@ -104,12 +104,13 @@ Pass `--ui <dir>` to `integrations-devkit` if you instead have a prebuilt static
 | `--seed <dir>` | `dev/seeds` | Committed seed directory |
 | `--state <file>` | `.revenexx-dev/state.json` | Session overlay file |
 | `--no-persist` | off | In-memory only; don't write the overlay |
-| `--port <n>` | `$PORT` or `3555` | Listen port |
+| `--port <n>` | `$PORT` or `3555` | Listen port. The default relocates when taken; an explicit one is reported as a conflict |
 | `--ui <dir>` | resolve UI package | Static UI build to serve |
 | `--no-ui` | off | Run API-only |
 | `--open` | off | Open the preview in a browser |
 | `--dir <path>` | managed cache | Use this preview-host dir instead (unmanaged) |
 | `--force` | off | Re-copy the host even if the target looks complete |
+| `--parallel` | off | Run a second `preview` alongside one already running |
 | `reset` (subcommand) | | Delete the session overlay |
 
 ## Seeds + persistence (layered)

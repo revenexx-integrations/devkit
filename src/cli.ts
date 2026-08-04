@@ -14,11 +14,13 @@
  * Options:
  *   --dir <path>     use this host dir instead of the managed cache (unmanaged)
  *   --force          re-copy the host even if the target looks complete
+ *   --parallel       allow a second preview next to one already running
  *   --entry <path>   package entry (default: src/index.ts, else dist/index.js)
  *   --seed <dir>     committed seeds dir (default: dev/seeds)
  *   --state <file>   session overlay file (default: .revenexx-dev/state.json)
  *   --no-persist     do not write the session overlay (in-memory only)
- *   --port <n>       listen port (default: $PORT or 3555)
+ *   --port <n>       listen port (default: $PORT or 3555; the default relocates
+ *                    when taken, an explicit one is reported as a conflict)
  *   --ui <dir>       static UI build dir to serve (default: resolve the UI package)
  *   --no-ui          run API-only, do not serve a UI
  *   --open           open the preview in a browser
@@ -30,122 +32,20 @@ import { existsSync, readdirSync, readFileSync, watch } from 'node:fs';
 import type http from 'node:http';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
-import { extname, join, resolve } from 'node:path';
+import { basename, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { type CliOptions, parseArgs } from './cli-args.js';
 import { loadEnvFile } from './env.js';
+import { CliError } from './errors.js';
 import { DEVKIT_VERSION } from './index.js';
 import { isReloadableSource, type LoadedPackage, loadPackageFromEntry } from './loader.js';
 import { applySeeds, loadSeedsFromDir, loadState, saveState } from './persistence.js';
-import { clearHostInstallMarker, hostBuildDir, hostNeedsInstall, markHostInstalled, materializeHost, resolveHostDir } from './preview/host.js';
+import { previewChildEnv } from './preview/child-env.js';
+import { clearHostInstallMarker, hostBuildDir, hostDotenvName, hostNeedsInstall, hostViteCacheDir, markHostInstalled, materializeHost, resolveHostDir, withInstallLock } from './preview/host.js';
+import { describePreview, previewConflict, readLivePreviews, registerPreview, unregisterPreview } from './preview/registry.js';
+import { findFreePort, listenWithFallback } from './ports.js';
 import { createRequestListener } from './server.js';
 import { DevStore } from './store.js';
-
-interface CliOptions {
-  entry: string;
-  seedDir: string;
-  stateFile: string;
-  persist: boolean;
-  port: number;
-  uiDir: string | null;
-  serveUi: boolean;
-  open: boolean;
-  /** Explicit host directory from `--dir`; null means use the managed cache. */
-  previewDir: string | null;
-  /** Re-copy the host even when the target looks complete. */
-  force: boolean;
-}
-
-function parseArgs(argv: string[]): { command: string | null; options: CliOptions } {
-  const cwd = process.cwd();
-  const opts: CliOptions = {
-    entry: '',
-    seedDir: resolve(cwd, 'dev/seeds'),
-    stateFile: resolve(cwd, '.revenexx-dev/state.json'),
-    persist: true,
-    port: Number.parseInt(process.env.PORT ?? '3555', 10),
-    uiDir: null,
-    serveUi: true,
-    open: false,
-    previewDir: null,
-    force: false,
-  };
-  let command: string | null = null;
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    switch (arg) {
-      case 'reset':
-        command = 'reset';
-        break;
-      case 'init-preview':
-        command = 'init-preview';
-        break;
-      case 'preview':
-        command = 'preview';
-        break;
-      case '--dir':
-        opts.previewDir = resolve(cwd, argv[++i] ?? '');
-        break;
-      case '--force':
-        opts.force = true;
-        break;
-      case '--entry':
-        opts.entry = resolve(cwd, argv[++i] ?? '');
-        break;
-      case '--seed':
-        opts.seedDir = resolve(cwd, argv[++i] ?? '');
-        break;
-      case '--state':
-        opts.stateFile = resolve(cwd, argv[++i] ?? '');
-        break;
-      case '--no-persist':
-        opts.persist = false;
-        break;
-      case '--port':
-        opts.port = Number.parseInt(argv[++i] ?? '3555', 10);
-        break;
-      case '--ui':
-        opts.uiDir = resolve(cwd, argv[++i] ?? '');
-        break;
-      case '--no-ui':
-        opts.serveUi = false;
-        break;
-      case '--open':
-        opts.open = true;
-        break;
-      // Both are consumed by loadEnvFile() before parsing; listed here so they
-      // do not fall through to the unknown-option branch. A repeated `--env`
-      // resolves to the last one, so each occurrence skips its own value.
-      case '--env':
-        i++;
-        break;
-      case '--no-env':
-        break;
-      case '--version':
-      case '-v':
-        command = 'version';
-        break;
-      default:
-        // Node acts on `--env-file[-if-exists]` itself but still forwards it
-        // here, so accept and skip it rather than rejecting the user's input.
-        // loadEnvFile() has already pointed them at `--env`.
-        if (arg?.startsWith('--env-file')) {
-          if (!arg.includes('=')) {
-            i++;
-          }
-          break;
-        }
-        if (arg?.startsWith('-')) {
-          console.error(`Unknown option: ${arg}`);
-          process.exit(1);
-        }
-    }
-  }
-  if (!opts.entry) {
-    const src = resolve(cwd, 'src/index.ts');
-    opts.entry = existsSync(src) ? src : resolve(cwd, 'dist/index.js');
-  }
-  return { command, options: opts };
-}
 
 /** Loads any JSON schemas bundled in the package's `assets/schemas` dir. */
 function loadSchemas(): Record<string, unknown> {
@@ -235,6 +135,8 @@ function serveStatic(uiDir: string, req: http.IncomingMessage, res: http.ServerR
 
 interface MockHandle {
   uiDir: string | null;
+  /** The port actually bound, which is not necessarily the one that was asked for. */
+  port: number;
   dispose(): void;
 }
 
@@ -278,7 +180,10 @@ async function startMock(options: CliOptions): Promise<MockHandle> {
     }
   });
 
-  await new Promise<void>(r => server.listen(options.port, r));
+  const port = await listenWithFallback(server, { port: options.port, strict: options.portExplicit });
+  if (port !== options.port) {
+    console.log(`Port ${options.port} was taken — the mock is on ${port} instead.`);
+  }
 
   const stopWatch = watchAndReload(options.entry, async () => {
     try {
@@ -291,6 +196,7 @@ async function startMock(options: CliOptions): Promise<MockHandle> {
 
   return {
     uiDir,
+    port,
     dispose() {
       if (options.persist) {
         saveState(options.stateFile, store.toSnapshot());
@@ -304,7 +210,7 @@ async function startMock(options: CliOptions): Promise<MockHandle> {
 /** Interactive mock server (API + optional static UI). */
 async function run(options: CliOptions): Promise<void> {
   const mock = await startMock(options);
-  const urlBase = `http://localhost:${options.port}`;
+  const urlBase = `http://localhost:${mock.port}`;
   console.log(`\n  Mock Integrations API  ${urlBase}/api/v1`);
   console.log(mock.uiDir ? `  Preview UI             ${urlBase}` : `  Preview UI             API-only — set your Nuxt host's integrationsApi to ${urlBase}/api/v1`);
   console.log('\n  Watching for changes. Ctrl-C to stop.\n');
@@ -362,67 +268,115 @@ function noteLegacyPreviewDir(): void {
   }
 }
 
+/** Default port for the Nuxt dev server, matching Nuxt's own. */
+const UI_PORT = 3000;
+
 /** Materializes (if needed), installs, and runs the Nuxt preview host + the mock together. */
 async function preview(options: CliOptions): Promise<void> {
-  const apiUrl = `http://localhost:${options.port}/api/v1`;
+  const cwd = process.cwd();
   const managed = options.previewDir === null;
-  const targetDir = options.previewDir ?? resolveHostDir({ version: DEVKIT_VERSION });
+  const hostDir = resolve(options.previewDir ?? resolveHostDir({ version: DEVKIT_VERSION }));
+
+  // Before anything is bound or copied: a second preview is usually a forgotten
+  // one from an earlier session, not a deliberate one.
+  const running = readLivePreviews(hostDir);
+  const conflict = previewConflict(running, { cwd, hostDir, parallel: options.parallel, force: options.force });
+  if (conflict) {
+    throw new CliError(conflict);
+  }
 
   noteLegacyPreviewDir();
-  const { dir } = materializeHost({
-    targetDir,
-    integrationsApiUrl: apiUrl,
-    force: options.force,
-    managed,
-    log: msg => console.log(msg),
-  });
-  if (managed) {
-    console.log(`  Host (devkit ${DEVKIT_VERSION}, shared across repos)  ${dir}`);
-  }
 
-  if (options.force) {
-    // `hostNeedsInstall` already reinstalls when the pins changed, so this is not
-    // that case — it is the escape hatch --force is documented to be: an install
-    // that reported success but left an unusable tree has no other way out short
-    // of deleting the directory.
-    clearHostInstallMarker(dir);
-  }
-  if (hostNeedsInstall(dir)) {
-    console.log('Installing preview-host dependencies (this pulls Nuxt + the studio packages and may take a while)…');
-    await runNpmInstall(dir);
-    markHostInstalled(dir);
-  }
-
+  // Bind the mock BEFORE copying and installing. A port clash or an entry that
+  // does not load then costs seconds, instead of surfacing after a multi-minute
+  // `npm install` with a Nuxt child already on the way.
   const mock = await startMock({ ...options, serveUi: false });
-  console.log(`\n  Mock Integrations API  ${apiUrl}`);
-  console.log('  Preview UI             http://localhost:3000/integrations (Nuxt starting…)\n');
+  const apiUrl = `http://localhost:${mock.port}/api/v1`;
 
-  const { spawn } = await import('node:child_process');
-  const child = spawn('npm', ['run', 'dev'], {
-    cwd: dir,
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      NUXT_PUBLIC_INTEGRATIONS_API: apiUrl,
-      NUXT_PUBLIC_DEV_TOKEN: process.env.NUXT_PUBLIC_DEV_TOKEN ?? 'dev',
-      NUXT_PUBLIC_DEV_TENANT: process.env.NUXT_PUBLIC_DEV_TENANT ?? 'dev-tenant',
-      // Keep the shared host's dependency install shared but its BUILD per repo,
-      // so two node packages previewing at once do not compile over each other.
-      DEVKIT_NUXT_BUILD_DIR: hostBuildDir(dir, process.cwd()),
-    },
-  });
+  try {
+    const { dir } = materializeHost({
+      targetDir: hostDir,
+      integrationsApiUrl: apiUrl,
+      dotenvName: managed ? hostDotenvName(cwd) : undefined,
+      force: options.force,
+      managed,
+      log: msg => console.log(msg),
+    });
 
-  const shutdown = () => {
-    child.kill('SIGTERM');
+    if (options.force) {
+      // `hostNeedsInstall` already reinstalls when the pins changed, so this is not
+      // that case — it is the escape hatch --force is documented to be: an install
+      // that reported success but left an unusable tree has no other way out short
+      // of deleting the directory.
+      clearHostInstallMarker(dir);
+    }
+    if (hostNeedsInstall(dir)) {
+      await withInstallLock(
+        dir,
+        async () => {
+          console.log('Installing preview-host dependencies (this pulls Nuxt + the studio packages and may take a while)…');
+          await runNpmInstall(dir);
+          markHostInstalled(dir);
+        },
+        { needsInstall: () => hostNeedsInstall(dir), log: msg => console.log(msg) },
+      );
+    }
+
+    // Honour an explicit NUXT_PORT; otherwise take the first free port. Nuxt's own
+    // listhen fallback still covers the gap between this check and its bind, which
+    // is why the URL below is Nuxt's to print, not ours.
+    const uiPort = process.env.NUXT_PORT ? Number(process.env.NUXT_PORT) : await findFreePort(UI_PORT);
+
+    console.log(`\n  Previewing             ${basename(cwd)}  (${cwd})`);
+    console.log(`  Mock Integrations API  ${apiUrl}`);
+    if (managed) {
+      console.log(`  Host (devkit ${DEVKIT_VERSION}, shared across repos)  ${dir}`);
+    }
+    console.log(`  Preview UI             starting on port ${uiPort} — Nuxt prints the URL it got, below.`);
+    for (const entry of running) {
+      console.log(`  Also running           ${describePreview(entry)}`);
+    }
+    console.log('');
+
+    const { spawn } = await import('node:child_process');
+    // The managed host reads a per-repo dotenv file, so it has to be named. An
+    // unmanaged copy keeps plain `.env`, which Nuxt picks up on its own.
+    const args = managed ? ['run', 'dev', '--', '--dotenv', hostDotenvName(cwd)] : ['run', 'dev'];
+    const child = spawn('npm', args, {
+      cwd: dir,
+      stdio: 'inherit',
+      env: previewChildEnv({
+        base: process.env,
+        apiUrl,
+        uiPort,
+        buildDir: hostBuildDir(dir, cwd),
+        viteCacheDir: hostViteCacheDir(dir, cwd),
+      }),
+    });
+
+    registerPreview(dir, { pid: process.pid, cwd, mockPort: mock.port, uiPort, startedAt: new Date().toISOString() });
+    const cleanUp = () => {
+      unregisterPreview(dir);
+      mock.dispose();
+    };
+
+    const shutdown = () => {
+      child.kill('SIGTERM');
+      cleanUp();
+      process.exit(0);
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+    child.on('exit', code => {
+      cleanUp();
+      process.exit(code ?? 0);
+    });
+  } catch (err) {
+    // The mock is already listening at this point; leaving it bound would make the
+    // next attempt look like a port conflict.
     mock.dispose();
-    process.exit(0);
-  };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
-  child.on('exit', code => {
-    mock.dispose();
-    process.exit(code ?? 0);
-  });
+    throw err;
+  }
 }
 
 async function openBrowser(url: string): Promise<void> {
@@ -478,6 +432,8 @@ async function main(): Promise<void> {
 }
 
 main().catch(err => {
-  console.error(err);
+  // A CliError is a message for the user, not a defect: print the message alone.
+  // Anything else keeps its stack, which is the only useful thing about it.
+  console.error(err instanceof CliError ? err.message : err);
   process.exit(1);
 });
