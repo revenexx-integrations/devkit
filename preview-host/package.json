@@ -10,9 +10,9 @@
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",
     "@revenexx/studio": "^0.1.3",
-    "@revenexx/studio-integrations": "0.5.1",
+    "@revenexx/studio-integrations": "0.6.0",
     "@revenexx/studio-shared": "^0.2.0",
-    "@solar-icons/nuxt": "^1.2.1",
+    "@solar-icons/nuxt": "^2.0.1",
     "@tiptap/core": "^3.28.0",
     "@tiptap/extension-document": "^3.28.0",
     "@tiptap/extension-history": "^3.28.0",
