@@ -9,10 +9,10 @@
   On Save the dialog is kept OPEN and the verdict shown: a success strip, or
   per-field errors fed back through the inspector's `refusedFields` prop so the
   wrong fields highlight in place, plus an explicit list (a refused field can be
-  scrolled out of view).
+  scrolled out of view). Cancel, the header ✕, Esc and the backdrop all close.
 
-  Closing is the DIALOG's job here — the X, Esc or the backdrop. The inspector's
-  own footer buttons both mean "check this config"; see `onInspectorClose`.
+  That split relies on Save always emitting `update` before `close`, which the
+  inspector only does while it considers itself dirty — see `keepInspectorDirty`.
 -->
 <template>
   <div class="ndx-page">
@@ -44,15 +44,9 @@
          classes, so the preview looks identical to the canvas. -->
     <Dialog :open="!!selection" @update:open="(v) => { if (!v) closeDialog() }">
       <DialogContent
+        :show-close-button="false"
         class="flex h-[min(680px,86vh)] w-[min(1100px,94vw)] max-w-none flex-col gap-0 overflow-hidden rounded-lg p-0 sm:max-w-none"
       >
-        <!-- The inspector's own footer/header buttons all emit the same `close`,
-             which this page turns into "validate" (see onInspectorClose) — so say
-             so, and say where the real close is. -->
-        <div class="ndx-strip ndx-strip-info">
-          Devkit-Preview: <strong>Save</strong> und <strong>Cancel</strong> prüfen die Config gegen den Mock,
-          ohne zu schließen. Schließen: <strong>✕ oben rechts</strong> oder <strong>Esc</strong>.
-        </div>
         <div v-if="result === 'ok'" class="ndx-strip ndx-strip-ok">✓ Payload gültig — alles gut.</div>
         <div v-else-if="result === 'err'" class="ndx-strip ndx-strip-err">
           <div>✗ Payload ungültig — {{ errorCount }} Feld(er) prüfen (rot markiert):</div>
@@ -63,11 +57,12 @@
         <div v-else-if="formError" class="ndx-strip ndx-strip-err">{{ formError }}</div>
         <IntegrationsNodeInspector
           v-if="selection"
+          ref="inspector"
           :selection="selection"
           :secret-keys="secretKeys"
           :refused-fields="refused"
           @update="onSubmit"
-          @close="onInspectorClose"
+          @close="requestClose"
         />
       </DialogContent>
     </Dialog>
@@ -75,7 +70,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { Dialog, DialogContent } from '@revenexx/studio'
 
 interface ApiNode {
@@ -104,8 +99,38 @@ const refused = ref<Record<string, string>>({})
 const result = ref<string | null>(null)
 const formError = ref<string | null>(null)
 // Set synchronously in onSubmit so the `close` the inspector emits right after an
-// `update` (Save with changes) does not validate the same config a second time.
+// `update` (i.e. Save) does NOT close the dialog — we keep it open for the verdict.
 const validating = ref(false)
+
+/**
+ * Key stamped onto `selection` to hold the inspector permanently "dirty".
+ *
+ * `NodeInspector.save()` emits `update` only when its draft differs from
+ * `selection` (a JSON string compare), then always emits `close`. On an untouched
+ * form — exactly the "is this field required?" case — Save therefore emits nothing
+ * but `close`, which is byte-for-byte what Cancel emits, and the page cannot tell
+ * them apart: it either closes on both (the old bug) or on neither (Cancel stops
+ * working). Making the comparison permanently unequal restores the distinction —
+ * Save always emits `update` first, so a bare `close` can only be Cancel, the
+ * header ✕, Esc or the backdrop.
+ *
+ * The inspector clones its draft from `selection` in setup and renders from that
+ * clone alone, so the key is stamped on afterwards (once the component ref exists),
+ * never appears in the form, and never reaches a validated payload. Its one visible
+ * trace is a permanent "Unsaved changes" in the footer — which in a preview that
+ * persists nothing is not even wrong.
+ *
+ * The proper fix belongs upstream: a `save` event on the inspector that fires
+ * regardless of `dirty`. Until studio-integrations has one, this stays.
+ */
+const ALWAYS_DIRTY = '__devkitPreviewProbe'
+
+const inspector = ref<unknown>(null)
+watch(inspector, (instance) => {
+  if (instance && selection.value && !(ALWAYS_DIRTY in selection.value)) {
+    selection.value = { ...selection.value, [ALWAYS_DIRTY]: true }
+  }
+})
 
 const errorCount = computed(() => Object.keys(refused.value).length)
 
@@ -159,10 +184,9 @@ async function onSubmit(draft: any) {
   refused.value = {}
   result.value = null
   formError.value = null
-  // Adopt the draft as the page's selection (a copy — the inspector keeps its own
-  // object). That resets the inspector's `dirty`, so every FURTHER Save emits only
-  // `close` and is validated by onInspectorClose against exactly what is on screen.
-  selection.value = JSON.parse(JSON.stringify(draft))
+  // `selection` is deliberately NOT updated from the draft: it carries the
+  // ALWAYS_DIRTY key, and adopting the draft would drop it and silence the next
+  // Save. The draft arrives here on every Save anyway, so there is nothing to sync.
   try {
     const slug = encodeURIComponent(draft.nodeSlug)
     const version = encodeURIComponent(draft.nodeVersion || 'latest')
@@ -192,24 +216,18 @@ async function onSubmit(draft: any) {
 }
 
 /**
- * The inspector's footer emits `close` on BOTH Save and Cancel, and studio's
- * `save()` gates its `update` emit on `dirty` — so a Save on an untouched form
- * (exactly the "required field is still empty" case) hands us nothing but a
- * `close`, and the two are indistinguishable from here.
- *
- * There is nothing to persist in this preview, so both footer buttons mean the
- * same thing: check this config. A `close` therefore validates and KEEPS THE
- * DIALOG OPEN; leaving is the dialog's own X / Esc / backdrop.
- *
- * `validating` guards the Save-with-changes path, where `update` fired first
- * (synchronously, before this `close`) and its validation is already in flight.
+ * The inspector emits `close` on Save, on Cancel and on its header ✕. Save is the
+ * only one that emits `update` first — synchronously, and ALWAYS, because
+ * ALWAYS_DIRTY keeps it dirty — so `validating` is already set by the time this
+ * runs and marks the close as Save's. Hold it, and the dialog stays open for the
+ * verdict. Anything else is a genuine close.
  */
-function onInspectorClose() {
-  if (validating.value || !selection.value) return
-  void onSubmit(selection.value)
+function requestClose() {
+  if (validating.value) return
+  closeDialog()
 }
 
-/** Real close — the dialog's X, Esc or backdrop. Discards the draft. */
+/** Esc, the backdrop, Cancel, the header ✕ — discards the draft. */
 function closeDialog() {
   selection.value = null
   refused.value = {}
@@ -235,7 +253,6 @@ function closeDialog() {
 
 /* Verdict strip shown at the top of the reused dialog content (does not close). */
 .ndx-strip { flex: 0 0 auto; padding: .5rem 1rem; font-size: .85rem; font-weight: 600; }
-.ndx-strip-info { background: #f3f4f6; color: #4b5563; font-weight: 400; }
 .ndx-strip-ok { background: #dcfce7; color: #166534; }
 .ndx-strip-err { background: #fee2e2; color: #991b1b; }
 .ndx-errs { margin: .35rem 0 0; padding-left: 1.1rem; font-weight: 400; }
