@@ -8,7 +8,11 @@
 
   On Save the dialog is kept OPEN and the verdict shown: a success strip, or
   per-field errors fed back through the inspector's `refusedFields` prop so the
-  wrong fields highlight in place.
+  wrong fields highlight in place, plus an explicit list (a refused field can be
+  scrolled out of view).
+
+  Closing is the DIALOG's job here — the X, Esc or the backdrop. The inspector's
+  own footer buttons both mean "check this config"; see `onInspectorClose`.
 -->
 <template>
   <div class="ndx-page">
@@ -38,14 +42,23 @@
     <!-- REUSE of the exact editor lightbox: mirrors WorkflowEditor.vue's
          <Dialog><DialogContent><NodeInspector/> block, including the sizing
          classes, so the preview looks identical to the canvas. -->
-    <Dialog :open="!!selection" @update:open="(v) => { if (!v) requestClose() }">
+    <Dialog :open="!!selection" @update:open="(v) => { if (!v) closeDialog() }">
       <DialogContent
-        :show-close-button="false"
         class="flex h-[min(680px,86vh)] w-[min(1100px,94vw)] max-w-none flex-col gap-0 overflow-hidden rounded-lg p-0 sm:max-w-none"
       >
+        <!-- The inspector's own footer/header buttons all emit the same `close`,
+             which this page turns into "validate" (see onInspectorClose) — so say
+             so, and say where the real close is. -->
+        <div class="ndx-strip ndx-strip-info">
+          Devkit-Preview: <strong>Save</strong> und <strong>Cancel</strong> prüfen die Config gegen den Mock,
+          ohne zu schließen. Schließen: <strong>✕ oben rechts</strong> oder <strong>Esc</strong>.
+        </div>
         <div v-if="result === 'ok'" class="ndx-strip ndx-strip-ok">✓ Payload gültig — alles gut.</div>
         <div v-else-if="result === 'err'" class="ndx-strip ndx-strip-err">
-          ✗ Payload ungültig — {{ errorCount }} Feld(er) prüfen (rot markiert).
+          <div>✗ Payload ungültig — {{ errorCount }} Feld(er) prüfen (rot markiert):</div>
+          <ul class="ndx-errs">
+            <li v-for="(msg, key) in refused" :key="key"><code>{{ key }}</code> — {{ msg }}</li>
+          </ul>
         </div>
         <div v-else-if="formError" class="ndx-strip ndx-strip-err">{{ formError }}</div>
         <IntegrationsNodeInspector
@@ -54,7 +67,7 @@
           :secret-keys="secretKeys"
           :refused-fields="refused"
           @update="onSubmit"
-          @close="requestClose"
+          @close="onInspectorClose"
         />
       </DialogContent>
     </Dialog>
@@ -90,8 +103,8 @@ const secretKeys = ref<string[]>([])
 const refused = ref<Record<string, string>>({})
 const result = ref<string | null>(null)
 const formError = ref<string | null>(null)
-// Set synchronously in onSubmit so the inspector's own Save (it emits update THEN
-// close) does NOT close the dialog — we keep it open to show the verdict.
+// Set synchronously in onSubmit so the `close` the inspector emits right after an
+// `update` (Save with changes) does not validate the same config a second time.
 const validating = ref(false)
 
 const errorCount = computed(() => Object.keys(refused.value).length)
@@ -146,6 +159,10 @@ async function onSubmit(draft: any) {
   refused.value = {}
   result.value = null
   formError.value = null
+  // Adopt the draft as the page's selection (a copy — the inspector keeps its own
+  // object). That resets the inspector's `dirty`, so every FURTHER Save emits only
+  // `close` and is validated by onInspectorClose against exactly what is on screen.
+  selection.value = JSON.parse(JSON.stringify(draft))
   try {
     const slug = encodeURIComponent(draft.nodeSlug)
     const version = encodeURIComponent(draft.nodeVersion || 'latest')
@@ -174,11 +191,26 @@ async function onSubmit(draft: any) {
   }
 }
 
-// The inspector emits close on both Save and Cancel; the studio Dialog emits it
-// on Esc / backdrop. Hold the close while a Save-validation is in flight so the
-// dialog stays open to show the result; otherwise close (discard).
-function requestClose() {
-  if (validating.value) return
+/**
+ * The inspector's footer emits `close` on BOTH Save and Cancel, and studio's
+ * `save()` gates its `update` emit on `dirty` — so a Save on an untouched form
+ * (exactly the "required field is still empty" case) hands us nothing but a
+ * `close`, and the two are indistinguishable from here.
+ *
+ * There is nothing to persist in this preview, so both footer buttons mean the
+ * same thing: check this config. A `close` therefore validates and KEEPS THE
+ * DIALOG OPEN; leaving is the dialog's own X / Esc / backdrop.
+ *
+ * `validating` guards the Save-with-changes path, where `update` fired first
+ * (synchronously, before this `close`) and its validation is already in flight.
+ */
+function onInspectorClose() {
+  if (validating.value || !selection.value) return
+  void onSubmit(selection.value)
+}
+
+/** Real close — the dialog's X, Esc or backdrop. Discards the draft. */
+function closeDialog() {
   selection.value = null
   refused.value = {}
   result.value = null
@@ -203,6 +235,9 @@ function requestClose() {
 
 /* Verdict strip shown at the top of the reused dialog content (does not close). */
 .ndx-strip { flex: 0 0 auto; padding: .5rem 1rem; font-size: .85rem; font-weight: 600; }
+.ndx-strip-info { background: #f3f4f6; color: #4b5563; font-weight: 400; }
 .ndx-strip-ok { background: #dcfce7; color: #166534; }
 .ndx-strip-err { background: #fee2e2; color: #991b1b; }
+.ndx-errs { margin: .35rem 0 0; padding-left: 1.1rem; font-weight: 400; }
+.ndx-errs code { font-weight: 600; }
 </style>
