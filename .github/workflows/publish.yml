@@ -61,7 +61,7 @@ jobs:
       # Versioning ("changeset version") runs by default; publishing happens only
       # once the "Version Packages" PR is merged and no changesets remain.
       - name: Create release PR or publish
-        uses: changesets/action@v2
+        uses: changesets/action@v1
         with:
           publish: npm run release
         env:
