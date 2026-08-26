@@ -54,6 +54,17 @@ export class PlaygroundNode implements INode {
     if (inputs.hang) {
       await new Promise(() => {});
     }
+    // The create-or-update shape every sync node has, so the preview can be
+    // driven through both branches across two calls.
+    if (inputs.correlate) {
+      const key = String(inputs.correlate);
+      const known = await ctx.state.mapping.get('article', key);
+      if (known === null) {
+        await ctx.state.mapping.put('article', key, `erp:${key}`);
+        return { outputs: { known: null }, branch: 'created' };
+      }
+      return { outputs: { known }, branch: 'updated' };
+    }
     return { outputs: { echoed: inputs }, branch: 'matched' };
   }
 

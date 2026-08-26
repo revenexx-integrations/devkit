@@ -77,6 +77,34 @@ describe('execute:test (runs the real execute in-process)', () => {
     expect(body.logs).toEqual([{ level: 'info', message: 'executing playground', meta: { keys: ['category', 'extra'] } }]);
   });
 
+  /**
+   * The whole point of the state store is the *second* run. A preview that
+   * forgot between calls could only ever show the create branch, which is the
+   * one an author does not need help with.
+   */
+  it('remembers what a node correlated, so the second call takes the update branch', async () => {
+    const first = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { correlate: 'pim:12345' },
+    });
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ branch: 'created', outputs: { known: null } });
+
+    const second = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { correlate: 'pim:12345' },
+    });
+    expect(second.status).toBe(200);
+    expect(second.body).toMatchObject({ branch: 'updated', outputs: { known: 'erp:pim:12345' } });
+  });
+
+  it('keeps a different key on the create branch', async () => {
+    await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', { inputs: { correlate: 'pim:1' } });
+
+    const other = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { correlate: 'pim:2' },
+    });
+    expect(other.body).toMatchObject({ branch: 'created' });
+  });
+
   it('reports a throwing node as 502 with the logs it managed to emit', async () => {
     const { status, body } = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', { inputs: { boom: true } });
     expect(status).toBe(502);

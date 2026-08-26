@@ -169,6 +169,16 @@ import {
 const ctx = createMockContext({ credentials: { 'smtp-1': { host: 'mail' } } });
 const res = await node.execute(ctx, { credentials: 'smtp-1' });
 
+// state (PO-374): seed what earlier runs left behind, then assert both branches
+const syncCtx = createMockContext({
+  state: {
+    mappings: { article: { 'pim:12345': 'erp:A-8891' } },
+    cursors: { 'crm.customers': { '': { updatedAfter: '2026-08-01T00:00:00Z' } } },
+  },
+});
+await node.execute(syncCtx, { id: '12345' });
+expect(syncCtx.state.mapping.put).not.toHaveBeenCalled(); // it was already known
+
 // author-time resolver
 const authorCtx = createAuthorContext({ category: 'fruits' });
 const options = await node.loadOptions(authorCtx, 'item');
@@ -201,3 +211,15 @@ This is a faithful **dev** stand-in, not the production service:
   client-side schema validation is inactive.
 - `POST /nodes/{slug}/{version}/config:validate` exists only here, not in the real
   API.
+- **The state store (PO-374) is writable here, and read-only in production.** In
+  the real product an author-time test run may read `ctx.state` but not write to
+  it: a correlation created by a test click is indistinguishable from one a
+  production run made, and the next real run would trust it. Locally there is no
+  such stake — the store is a disposable overlay in `.revenexx-dev/` — and
+  refusing writes would make it impossible to exercise the very nodes the state
+  store exists for. So a node that correlates ids behaves on its second preview
+  call like a second run, which it would not do against the real API. There is
+  also no namespace declaration and no role enforcement here: any namespace
+  name works, where the real engine refuses one the workflow did not declare.
+- The state entries are not exposed over the mock API, so the Cockpit's State
+  view is inactive in the preview.

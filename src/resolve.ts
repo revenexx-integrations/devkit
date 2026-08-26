@@ -8,6 +8,7 @@ import {
   type ICredentialTestResult,
   type INode,
   type INodeAuthorContext,
+  type INodeState,
   type IOutputPort,
   isOAuthAuthorizeCredential,
 } from '@revenexx/integrations-node-sdk';
@@ -97,6 +98,66 @@ export async function resolveCredentialInstance(loaded: LoadedPackage, store: De
   const ctx = credentialContext(store, credentialId);
   return cred.resolve(ctx, instance.config, instance.durableCreds);
 }
+
+/**
+ * `ctx.state` for the local preview (PO-374), backed by the dev store — so a
+ * node that correlates ids behaves on its second call like a second run.
+ *
+ * **Deliberately divergent from production**, and the one place this mock does
+ * not mirror the real API: there, author-time execution is read-only, because a
+ * correlation created by a test click would be indistinguishable from one a
+ * production run made and the next real run would trust it. Locally there is no
+ * such stake — the whole store is a disposable overlay in `.revenexx-dev/` — and
+ * refusing writes would make it impossible to exercise the very nodes the state
+ * store exists for. The divergence is noted in the README.
+ */
+function devState(store: DevStore): INodeState {
+  return {
+    mapping: {
+      async get(namespace, key, side = 'left') {
+        if (side === 'left') {
+          const entry = store.getStateEntry(namespace, key);
+          return entry ? String(entry.value) : null;
+        }
+        const match = store.listStateEntries(namespace).find(e => String(e.value) === key);
+        return match ? match.key : null;
+      },
+      async put(namespace, left, right) {
+        store.putStateEntry({ namespace, role: 'mapping', key: left, value: right });
+      },
+    },
+    cursor: {
+      async get(namespace, partitionKey = '') {
+        return store.getStateEntry(namespace, partitionKey)?.value;
+      },
+      async set(namespace, value, partitionKey = '') {
+        store.putStateEntry({ namespace, role: 'cursor', key: partitionKey, value });
+      },
+    },
+    async claim(namespace, key, opts) {
+      const held = store.getStateEntry(namespace, key);
+      // Expiry is honoured so a short TTL can actually be exercised locally,
+      // rather than a claim looking permanent for the whole session.
+      if (held && Number(held.value) > Date.now()) {
+        return false;
+      }
+      const ttlSeconds = opts?.ttlSeconds ?? DEFAULT_CLAIM_TTL_SECONDS;
+      store.putStateEntry({ namespace, role: 'dedupe', key, value: Date.now() + ttlSeconds * 1000 });
+      return true;
+    },
+    digest: {
+      async unchanged(namespace, entityKey, digest) {
+        return store.getStateEntry(namespace, entityKey)?.value === digest;
+      },
+      async set(namespace, entityKey, digest) {
+        store.putStateEntry({ namespace, role: 'digest', key: entityKey, value: digest });
+      },
+    },
+  };
+}
+
+/** Mirrors the engine's default claim lifetime (7 days). */
+const DEFAULT_CLAIM_TTL_SECONDS = 604_800;
 
 function authorContext(loaded: LoadedPackage, store: DevStore, config: Record<string, unknown>, locale?: string): INodeAuthorContext {
   return {
@@ -425,6 +486,7 @@ export async function executeNodeTest(loaded: LoadedPackage, store: DevStore, in
         return (await resolveCredentialInstance(loaded, store, id)).credentials;
       },
     },
+    state: devState(store),
   };
 
   try {
