@@ -220,6 +220,8 @@ This is a faithful **dev** stand-in, not the production service:
   store exists for. So a node that correlates ids behaves on its second preview
   call like a second run, which it would not do against the real API. There is
   also no namespace declaration and no role enforcement here: any namespace
-  name works, where the real engine refuses one the workflow did not declare.
+  name works, where the real engine refuses one the workflow did not declare —
+  including the per-node half, where only the namespaces a node's own
+  `state-ref` settings name are reachable.
 - The state entries are not exposed over the mock API, so the Cockpit's State
   view is inactive in the preview.
