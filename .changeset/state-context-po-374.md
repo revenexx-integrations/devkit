@@ -17,5 +17,8 @@ correlates ids behaves on its second call like a second run. That is a
 deliberate divergence from production, where author-time execution is read-only
 — see the fidelity caveats in the README.
 
-Requires `@revenexx/integrations-node-sdk` >= 0.19.0, which is where
-`INodeContext.state` is declared.
+Requires `@revenexx/integrations-node-sdk` >= 1.0.0, which is where
+`INodeContext.state` is declared. That SDK release is a major one precisely
+because `state` is required — and this package is the reason it is felt
+immediately: `MockContext` is `INodeContext & {…}`, so it cannot compile against
+the new contract without supplying `state`.
