@@ -9,6 +9,7 @@ import {
   executeNodeTest,
   findCredential,
   findCredentialType,
+  listNodesNewestFirst,
   nodeVersions,
   resolveNodeConfig,
   testCredentialConfig,
@@ -142,8 +143,12 @@ function handleSchemas(res: http.ServerResponse, deps: DevServerDeps, seg: strin
 
 async function handleNodes(req: http.IncomingMessage, res: http.ServerResponse, method: string, loaded: LoadedPackage, store: DevStore, seg: string[]): Promise<void> {
   // GET /nodes
+  //
+  // Newest version first per slug — the order the registry answers in, and the
+  // one the studio's catalogue reads "a newer version exists" out of. See
+  // `listNodesNewestFirst`.
   if (seg.length === 1 && method === 'GET') {
-    return void sendJson(res, 200, { data: loaded.manifest.nodes.map(n => nodeToApi(n, nodeApiContext(loaded))) });
+    return void sendJson(res, 200, { data: listNodesNewestFirst(loaded.manifest.nodes).map(n => nodeToApi(n, nodeApiContext(loaded))) });
   }
   const slug = seg[1];
   if (!slug) {

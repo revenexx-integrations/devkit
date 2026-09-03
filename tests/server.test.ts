@@ -1,5 +1,5 @@
 import type { AddressInfo } from 'node:net';
-import type { IOutputPort } from '@revenexx/integrations-node-sdk';
+import type { INode, IOutputPort } from '@revenexx/integrations-node-sdk';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDevServer, DevStore, resolveExports } from '../src/index.js';
 import { PlaygroundNode, StaticCredential, template } from './fixtures/package.js';
@@ -289,5 +289,69 @@ describe('templates + workflows + schemas', () => {
    */
   it('404s an unknown version of a known schema domain', async () => {
     expect((await get('/schemas/node/v99-nope')).status).toBe(404);
+  });
+});
+
+/**
+ * `GET /nodes` is the listing the studio builds its node catalogue from, and
+ * since `@revenexx/studio-integrations` 1.3.0 that catalogue reads "a newer
+ * version of this node exists" as position in the array rather than by parsing a
+ * semver. Export order — the order a human writes the versions in, oldest first
+ * — would therefore have the inspector offer a DOWNGRADE as the upgrade.
+ */
+describe('node listing order', () => {
+  class Versioned implements Pick<INode, 'description'> {
+    constructor(
+      private readonly slug: string,
+      private readonly version: string,
+    ) {}
+    get description() {
+      return {
+        slug: this.slug,
+        version: this.version,
+        category: 'action' as const,
+        name: this.slug,
+        inputs: {},
+        outputs: [{ kind: 'branch' as const, dataType: 'any' as const }],
+        config: [],
+      };
+    }
+    async execute() {
+      return { outputs: {} };
+    }
+  }
+
+  const multi = resolveExports({
+    NODES: [new Versioned('devkit:alpha', '1.0.0'), new Versioned('devkit:alpha', '2.0.0'), new Versioned('devkit:beta', '0.9.0'), new Versioned('devkit:alpha', '1.10.0')] as unknown as INode[],
+  });
+  const multiServer = createDevServer({ getPackage: () => multi, store: new DevStore() });
+  let multiBase = '';
+
+  beforeAll(async () => {
+    await new Promise<void>(resolve => multiServer.listen(0, resolve));
+    multiBase = `http://127.0.0.1:${(multiServer.address() as AddressInfo).port}/api/v1`;
+  });
+  afterAll(async () => {
+    await new Promise<void>(resolve => multiServer.close(() => resolve()));
+  });
+
+  it('groups a slug together, newest version first, slugs in export order', async () => {
+    const res = await fetch(`${multiBase}/nodes`);
+    const body = (await res.json()) as { data: Array<{ slug: string; version: string }> };
+    expect(body.data.map(n => `${n.slug}@${n.version}`)).toEqual([
+      // 1.10.0 above 1.0.0 — a string compare would put it below.
+      'devkit:alpha@2.0.0',
+      'devkit:alpha@1.10.0',
+      'devkit:alpha@1.0.0',
+      'devkit:beta@0.9.0',
+    ]);
+  });
+
+  it('lists the same versions as GET /nodes/{slug}/versions, in the same order', async () => {
+    const listed = await fetch(`${multiBase}/nodes`);
+    const listedBody = (await listed.json()) as { data: Array<{ slug: string; version: string }> };
+    const versions = await fetch(`${multiBase}/nodes/devkit%3Aalpha/versions`);
+    const versionsBody = (await versions.json()) as { data: string[] };
+    expect(listedBody.data.filter(n => n.slug === 'devkit:alpha').map(n => n.version)).toEqual(versionsBody.data);
   });
 });
