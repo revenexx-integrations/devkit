@@ -131,6 +131,24 @@ describe('execute:test (runs the real execute in-process)', () => {
     expect(next.body).toMatchObject({ outputs: { from: { updatedAfter: '2026-09-01T10:00:00Z' } } });
   });
 
+  /**
+   * The four roles share a namespace and a key without sharing a slot. A digest
+   * written for the entity that was just correlated must not become the answer
+   * `mapping.get` gives, or the next call takes the update branch on a partner
+   * id that was never a partner id.
+   */
+  it('keeps a correlation and a digest for the same key apart', async () => {
+    const first = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { correlate: 'pim:77', digestToo: true },
+    });
+    expect(first.body).toMatchObject({ branch: 'created' });
+
+    const second = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { correlate: 'pim:77' },
+    });
+    expect(second.body).toMatchObject({ branch: 'updated', outputs: { known: 'erp:pim:77' } });
+  });
+
   it('keeps a different key on the create branch', async () => {
     await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', { inputs: { correlate: 'pim:1' } });
 

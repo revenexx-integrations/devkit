@@ -32,7 +32,10 @@ execution is read-only — see the fidelity caveats in the README.
 release (PO-410, PO-374). A setting whose condition does not hold is skipped
 whole — not demanded when required, not type-checked either, because the editor
 does not draw it — using the SDK's own `settingApplies` rather than a second
-copy of the rule. A `state-ref` is checked as the namespace name it carries.
+copy of the rule. That covers a `dynamic-schema` marker carrying the condition:
+the group it stands for is neither demanded nor resolved, so no author-time
+resolver runs for a group nobody is looking at. A `state-ref` is checked as the
+namespace name it carries.
 
 Requires `@revenexx/integrations-node-sdk` >= 1.0.0, which is where
 `INodeContext.state` is declared. That SDK release is a major one precisely

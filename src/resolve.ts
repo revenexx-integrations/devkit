@@ -133,19 +133,16 @@ function createRunState(store: DevStore): { state: INodeState; commit: () => voi
     mapping: {
       async get(namespace, key, side = 'left') {
         if (side === 'left') {
-          const entry = store.getStateEntry(namespace, key);
+          const entry = store.getStateEntry('mapping', namespace, key);
           return entry ? String(entry.value) : null;
         }
-        const match = store.listStateEntries(namespace).find(e => String(e.value) === key);
+        const match = store.listStateEntries('mapping', namespace).find(e => String(e.value) === key);
         return match ? match.key : null;
       },
       async put(namespace, left, right) {
         assertNotRepointed(
           namespace,
-          store
-            .listStateEntries(namespace)
-            .filter(e => e.role === 'mapping')
-            .map(e => [e.key, String(e.value)] as [string, string]),
+          store.listStateEntries('mapping', namespace).map(e => [e.key, String(e.value)] as [string, string]),
           left,
           right,
         );
@@ -154,7 +151,7 @@ function createRunState(store: DevStore): { state: INodeState; commit: () => voi
     },
     cursor: {
       async get(namespace, partitionKey = '') {
-        return store.getStateEntry(namespace, partitionKey)?.value;
+        return store.getStateEntry('cursor', namespace, partitionKey)?.value;
       },
       async set(namespace, value, partitionKey = '') {
         stage({ namespace, role: 'cursor', key: partitionKey, value });
@@ -162,7 +159,7 @@ function createRunState(store: DevStore): { state: INodeState; commit: () => voi
     },
     async claim(namespace, key, opts) {
       assertTtlInRange(opts?.ttlSeconds);
-      const held = store.getStateEntry(namespace, key);
+      const held = store.getStateEntry('dedupe', namespace, key);
       // Expiry is honoured so a short TTL can actually be exercised locally,
       // rather than a claim looking permanent for the whole session.
       if (held && Number(held.value) > Date.now()) {
@@ -174,7 +171,7 @@ function createRunState(store: DevStore): { state: INodeState; commit: () => voi
     },
     digest: {
       async unchanged(namespace, entityKey, digest) {
-        return store.getStateEntry(namespace, entityKey)?.value === digest;
+        return store.getStateEntry('digest', namespace, entityKey)?.value === digest;
       },
       async set(namespace, entityKey, digest) {
         stage({ namespace, role: 'digest', key: entityKey, value: digest });
@@ -437,12 +434,18 @@ export async function validateNodeConfig(loaded: LoadedPackage, store: DevStore,
       continue; // resolved child fields are validated below
     }
     if (!settingApplies(field, config)) {
-      continue; // its `showIf` says it is not on screen — see below
+      continue; // its `showIf` says it is not on screen — see the doc comment
     }
     validateField(field, config[field.key], errors);
   }
 
-  if (fields.some(f => f.type === 'dynamic-schema') && node.resolveConfigSchema) {
+  // A `dynamic-schema` marker can carry a `showIf` of its own — the condition
+  // sits on `IConfigFieldBase`, not on the leaf types — and then the whole group
+  // it stands for is off screen. `resolveConfigSchema` is per node rather than
+  // per field, so a node with several markers resolves as soon as one of them
+  // applies: which children came from which marker is not something the callback
+  // says, and demanding none of them would be the worse guess of the two.
+  if (fields.some(f => f.type === 'dynamic-schema' && settingApplies(f, config)) && node.resolveConfigSchema) {
     const ctx = authorContext(loaded, store, config, input.locale);
     let children: IConfigField[];
     try {

@@ -113,8 +113,14 @@ function now(): string {
   return new Date().toISOString();
 }
 
-function stateKey(namespace: string, key: string): string {
-  return `${namespace}\u0000${key}`;
+/**
+ * The role is part of the identity, not a label on the record: the four roles
+ * share a namespace and a key freely — the entity that was just correlated is
+ * usually the one a digest is written for — and one slot per `(namespace, key)`
+ * would let a digest become the answer a mapping lookup gives.
+ */
+function stateKey(role: StateEntryRecord['role'], namespace: string, key: string): string {
+  return `${role}\u0000${namespace}\u0000${key}`;
 }
 
 export class DevStore {
@@ -122,7 +128,7 @@ export class DevStore {
   private secrets = new Map<string, SecretRecord>();
   private workflows = new Map<number, WorkflowRecord>();
   private triggers = new Map<string, TriggerRecord>();
-  /** Keyed by `${namespace}\u0000${key}` — a NUL cannot occur in either half. */
+  /** Keyed by `${role}\u0000${namespace}\u0000${key}` — a NUL occurs in no part. */
   private stateEntries = new Map<string, StateEntryRecord>();
   private nextWorkflowId = 1;
 
@@ -381,19 +387,19 @@ export class DevStore {
 
   // ------------------------------------------------------------------ state
 
-  /** The stored entry for a namespace/key, or undefined when unknown. */
-  getStateEntry(namespace: string, key: string): StateEntryRecord | undefined {
-    return this.stateEntries.get(stateKey(namespace, key));
+  /** The stored entry for a role/namespace/key, or undefined when unknown. */
+  getStateEntry(role: StateEntryRecord['role'], namespace: string, key: string): StateEntryRecord | undefined {
+    return this.stateEntries.get(stateKey(role, namespace, key));
   }
 
-  /** Every entry of a namespace — how a reverse mapping lookup is answered. */
-  listStateEntries(namespace: string): StateEntryRecord[] {
-    return [...this.stateEntries.values()].filter(e => e.namespace === namespace);
+  /** Every entry a namespace holds in one role — how a reverse mapping lookup is answered. */
+  listStateEntries(role: StateEntryRecord['role'], namespace: string): StateEntryRecord[] {
+    return [...this.stateEntries.values()].filter(e => e.role === role && e.namespace === namespace);
   }
 
   putStateEntry(entry: Omit<StateEntryRecord, 'updatedAt'>): StateEntryRecord {
     const record: StateEntryRecord = { ...entry, updatedAt: now() };
-    this.stateEntries.set(stateKey(entry.namespace, entry.key), record);
+    this.stateEntries.set(stateKey(entry.role, entry.namespace, entry.key), record);
     this.onChange?.();
     return record;
   }
@@ -415,7 +421,7 @@ export class DevStore {
     this.secrets = new Map(snapshot.secrets.map(s => [s.key, s]));
     this.workflows = new Map(snapshot.workflows.map(w => [w.id, w]));
     this.triggers = new Map(snapshot.triggers.map(t => [t.id, t]));
-    this.stateEntries = new Map((snapshot.stateEntries ?? []).map(e => [stateKey(e.namespace, e.key), e]));
+    this.stateEntries = new Map((snapshot.stateEntries ?? []).map(e => [stateKey(e.role, e.namespace, e.key), e]));
     this.nextWorkflowId = snapshot.nextWorkflowId ?? Math.max(0, ...snapshot.workflows.map(w => w.id)) + 1;
   }
 
@@ -439,7 +445,7 @@ export class DevStore {
       this.triggers.set(t.id, t);
     }
     for (const e of snapshot.stateEntries ?? []) {
-      this.stateEntries.set(stateKey(e.namespace, e.key), e);
+      this.stateEntries.set(stateKey(e.role, e.namespace, e.key), e);
     }
     this.nextWorkflowId = Math.max(this.nextWorkflowId, snapshot.nextWorkflowId ?? 0, ...snapshot.workflows.map(w => w.id + 1));
   }

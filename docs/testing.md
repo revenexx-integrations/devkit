@@ -110,3 +110,9 @@ when required, and not type-checked either. The editor does not draw it, so a va
 under its key is a leftover from a choice the author has since changed. The decision comes
 from the SDK's own `settingApplies`, so the editor drawing the field and this validator
 demanding it cannot drift apart.
+
+That includes a `dynamic-schema` marker: a condition can sit on the marker itself, and then
+the whole group is off screen — its children are neither demanded nor resolved, so no
+author-time resolver runs for a group nobody is looking at. `resolveConfigSchema` is per
+node rather than per field, so a node carrying several markers resolves as soon as one of
+them applies.

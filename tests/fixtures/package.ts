@@ -72,6 +72,12 @@ export class PlaygroundNode implements INode {
       const known = await ctx.state.mapping.get('article', key);
       if (known === null) {
         await ctx.state.mapping.put('article', key, `erp:${key}`);
+        // `{ digestToo: true }` writes a digest under the same namespace and key,
+        // which is what a store keyed by namespace+key alone would confuse for
+        // the correlation.
+        if (inputs.digestToo) {
+          await ctx.state.digest.set('article', key, 'sha-abc');
+        }
         return { outputs: { known: null }, branch: 'created' };
       }
       return { outputs: { known }, branch: 'updated' };
