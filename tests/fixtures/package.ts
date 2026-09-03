@@ -54,6 +54,17 @@ export class PlaygroundNode implements INode {
     if (inputs.hang) {
       await new Promise(() => {});
     }
+    // An incremental read: reports the watermark it was handed, stages the next
+    // one, and — with `{ thenBoom: true }` — fails after staging it, which is
+    // the case the staging rule exists for.
+    if (inputs.advance) {
+      const from = await ctx.state.cursor.get('crm.customers');
+      await ctx.state.cursor.set('crm.customers', { updatedAfter: String(inputs.advance) });
+      if (inputs.thenBoom) {
+        throw new Error('boom after staging');
+      }
+      return { outputs: { from: from ?? null }, branch: 'matched' };
+    }
     // The create-or-update shape every sync node has, so the preview can be
     // driven through both branches across two calls.
     if (inputs.correlate) {

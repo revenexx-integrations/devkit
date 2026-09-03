@@ -179,6 +179,12 @@ const syncCtx = createMockContext({
 await node.execute(syncCtx, { id: '12345' });
 expect(syncCtx.state.mapping.put).not.toHaveBeenCalled(); // it was already known
 
+// a cursor and a digest are staged: the run that sets one does not read it back.
+// completeRun() is the run's ending — leave it out to play the run that failed
+await node.execute(syncCtx, { since: 'cursor' });
+syncCtx.completeRun();
+await node.execute(syncCtx, { since: 'cursor' }); // reads what the first run staged
+
 // author-time resolver
 const authorCtx = createAuthorContext({ category: 'fruits' });
 const options = await node.loadOptions(authorCtx, 'item');
@@ -218,10 +224,25 @@ This is a faithful **dev** stand-in, not the production service:
   such stake — the store is a disposable overlay in `.revenexx-dev/` — and
   refusing writes would make it impossible to exercise the very nodes the state
   store exists for. So a node that correlates ids behaves on its second preview
-  call like a second run, which it would not do against the real API. There is
-  also no namespace declaration and no role enforcement here: any namespace
-  name works, where the real engine refuses one the workflow did not declare —
+  call like a second run, which it would not do against the real API.
+
+  What the store *does* enforce is kept: a mapping and a claim take effect at
+  once while a cursor and a digest are staged and adopted only when the run
+  completes (a preview call that fails leaves them where they were), re-pointing
+  either side of an existing correlation is refused, and a `ttlSeconds` outside
+  1…31536000 is refused rather than clamped. A node that passes here should not
+  meet the store's rules for the first time in production.
+- **No namespace declaration and no role enforcement.** Any namespace name
+  works, where the real engine refuses one the workflow did not declare —
   including the per-node half, where only the namespaces a node's own
-  `state-ref` settings name are reachable.
+  `state-ref` settings name are reachable. Nothing local can enforce that: there
+  is no workflow declaring namespaces to check against.
+- **A `state-ref` setting is drawn as a JSON box, not a picker.** The editor's
+  picker — the workflow's namespaces of that role, and the offer to declare a
+  new one — does not exist yet in `studio-integrations`, and a field type the
+  editor does not know falls back to its raw JSON control. Type the namespace
+  name as a JSON string (`"article"`). The value reaches `execute` either way,
+  so the node can be exercised; only the choosing is missing. `config:validate`
+  does check it is a string.
 - The state entries are not exposed over the mock API, so the Cockpit's State
   view is inactive in the preview.

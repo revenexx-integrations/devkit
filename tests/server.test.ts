@@ -96,6 +96,41 @@ describe('execute:test (runs the real execute in-process)', () => {
     expect(second.body).toMatchObject({ branch: 'updated', outputs: { known: 'erp:pim:12345' } });
   });
 
+  /**
+   * A cursor is staged, not written: the run that advances the watermark does
+   * not read it back, and a run that fails afterwards leaves it where it was.
+   * Getting this wrong locally is invisible until a production run fails and
+   * silently skips everything it never read.
+   */
+  it('adopts a staged cursor only once the run completes', async () => {
+    const first = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { advance: '2026-08-26T10:00:00Z' },
+    });
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ outputs: { from: null } });
+
+    const second = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { advance: '2026-08-27T10:00:00Z' },
+    });
+    expect(second.body).toMatchObject({ outputs: { from: { updatedAfter: '2026-08-26T10:00:00Z' } } });
+  });
+
+  it('drops what a failed run staged, so the next one reads the old watermark', async () => {
+    await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { advance: '2026-09-01T10:00:00Z' },
+    });
+
+    const failed = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { advance: '2026-09-02T10:00:00Z', thenBoom: true },
+    });
+    expect(failed.status).toBe(502);
+
+    const next = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { advance: '2026-09-03T10:00:00Z' },
+    });
+    expect(next.body).toMatchObject({ outputs: { from: { updatedAfter: '2026-09-01T10:00:00Z' } } });
+  });
+
   it('keeps a different key on the create branch', async () => {
     await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', { inputs: { correlate: 'pim:1' } });
 

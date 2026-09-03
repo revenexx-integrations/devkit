@@ -59,7 +59,25 @@ describe('createMockContext', () => {
     await expect(ctx.state.claim('orders', 'evt_1')).resolves.toBe(false);
   });
 
-  it('round-trips a cursor, seeded or written', async () => {
+  it('refuses to re-point either side of a correlation, and takes the same pair again', async () => {
+    const ctx = createMockContext({ state: { mappings: { article: { 'pim:1': 'erp:A-1' } } } });
+
+    await expect(ctx.state.mapping.put('article', 'pim:1', 'erp:A-2')).rejects.toThrow(/already correlated with 'erp:A-1'/);
+    await expect(ctx.state.mapping.put('article', 'pim:2', 'erp:A-1')).rejects.toThrow(/already correlated with 'pim:1'/);
+
+    // Not a re-point: a node that puts unconditionally on every run stays green.
+    await expect(ctx.state.mapping.put('article', 'pim:1', 'erp:A-1')).resolves.toBeUndefined();
+  });
+
+  it('refuses a claim window the store would not accept', async () => {
+    const ctx = createMockContext();
+
+    await expect(ctx.state.claim('orders', 'evt_1', { ttlSeconds: 0 })).rejects.toThrow(/between 1 and 31536000/);
+    await expect(ctx.state.claim('orders', 'evt_1', { ttlSeconds: 31_536_001 })).rejects.toThrow(/between 1 and 31536000/);
+    await expect(ctx.state.claim('orders', 'evt_1', { ttlSeconds: 60 })).resolves.toBe(true);
+  });
+
+  it('reads the committed cursor while the run that staged one is still going', async () => {
     const ctx = createMockContext({
       state: { cursors: { 'crm.customers': { '': { updatedAfter: '2026-08-01T00:00:00Z' } } } },
     });
@@ -68,7 +86,28 @@ describe('createMockContext', () => {
       updatedAfter: '2026-08-01T00:00:00Z',
     });
 
+    await ctx.state.cursor.set('crm.customers', { updatedAfter: '2026-08-26T10:00:00Z' });
+
+    // Staged, not adopted: a run does not see its own watermark, and a run that
+    // never completes leaves the previous one in place for the next.
+    await expect(ctx.state.cursor.get('crm.customers')).resolves.toEqual({
+      updatedAfter: '2026-08-01T00:00:00Z',
+    });
+
+    ctx.completeRun();
+
+    await expect(ctx.state.cursor.get('crm.customers')).resolves.toEqual({
+      updatedAfter: '2026-08-26T10:00:00Z',
+    });
+  });
+
+  it('keeps partitions apart once a staged cursor is adopted', async () => {
+    const ctx = createMockContext({
+      state: { cursors: { 'crm.customers': { '': { updatedAfter: '2026-08-01T00:00:00Z' } } } },
+    });
+
     await ctx.state.cursor.set('crm.customers', { updatedAfter: '2026-08-26T10:00:00Z' }, 'shop-de');
+    ctx.completeRun();
 
     await expect(ctx.state.cursor.get('crm.customers', 'shop-de')).resolves.toEqual({
       updatedAfter: '2026-08-26T10:00:00Z',
@@ -78,13 +117,17 @@ describe('createMockContext', () => {
     });
   });
 
-  it('compares digests against what was seeded or set', async () => {
+  it('compares digests against what was seeded, and adopts a staged one on completion', async () => {
     const ctx = createMockContext({ state: { digests: { 'article.hash': { 'article:1': 'sha-abc' } } } });
 
     await expect(ctx.state.digest.unchanged('article.hash', 'article:1', 'sha-abc')).resolves.toBe(true);
     await expect(ctx.state.digest.unchanged('article.hash', 'article:1', 'sha-def')).resolves.toBe(false);
 
     await ctx.state.digest.set('article.hash', 'article:1', 'sha-def');
+    // A digest counts only once the write it describes actually went through.
+    await expect(ctx.state.digest.unchanged('article.hash', 'article:1', 'sha-def')).resolves.toBe(false);
+
+    ctx.completeRun();
     await expect(ctx.state.digest.unchanged('article.hash', 'article:1', 'sha-def')).resolves.toBe(true);
   });
 

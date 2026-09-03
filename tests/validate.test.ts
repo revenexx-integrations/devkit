@@ -26,6 +26,23 @@ class RulesNode implements INode {
         ],
       },
       { key: 'token', label: 'Token', type: 'string' as const, required: true, expressionAllowed: true },
+      {
+        key: 'source',
+        label: 'Source',
+        type: 'select' as const,
+        options: [
+          { value: 'field', label: 'Field' },
+          { value: 'now', label: 'Now' },
+        ],
+      },
+      {
+        key: 'path',
+        label: 'Path to the date',
+        type: 'string' as const,
+        required: true,
+        showIf: { key: 'source', op: 'equals' as const, value: 'field' },
+      },
+      { key: 'namespace', label: 'Namespace', type: 'state-ref' as const, stateRole: 'mapping' as const },
       { key: 'params', label: 'Params', type: 'dynamic-schema' as const, dependsOn: ['host'] },
     ],
   };
@@ -91,5 +108,39 @@ describe('config:validate', () => {
   it('passes a fully valid payload', async () => {
     const { body } = await validate({ host: 'db.local', token: 'secret', entity_id: 'e-1', port: 5432, code: 'ABC', mode: 'a' });
     expect(body).toEqual({ valid: true, errors: {} });
+  });
+
+  /**
+   * `showIf` (SDK 1.0.0, PO-410): the editor does not draw a setting whose
+   * condition does not hold, so demanding it here would put an error against a
+   * field the author cannot see.
+   */
+  it('does not demand a required field whose showIf does not hold', async () => {
+    const base = { host: 'h', token: 't', entity_id: 'e' };
+
+    expect((await validate({ ...base, source: 'now' })).body).toEqual({ valid: true, errors: {} });
+
+    const conditioned = await validate({ ...base, source: 'field' });
+    expect(conditioned.body.valid).toBe(false);
+    expect(conditioned.body.errors.path).toBeDefined();
+
+    expect((await validate({ ...base, source: 'field', path: 'updated_at' })).body).toEqual({ valid: true, errors: {} });
+  });
+
+  it('leaves a stale value under a field that does not apply alone', async () => {
+    // `path` holds a leftover from a choice the author has since changed away
+    // from; it is not drawn, so it is not checked either.
+    const { body } = await validate({ host: 'h', token: 't', entity_id: 'e', source: 'now', path: 42 });
+    expect(body).toEqual({ valid: true, errors: {} });
+  });
+
+  it('checks a state-ref as the namespace name it carries', async () => {
+    const base = { host: 'h', token: 't', entity_id: 'e' };
+
+    expect((await validate({ ...base, namespace: 'article' })).body).toEqual({ valid: true, errors: {} });
+
+    const wrong = await validate({ ...base, namespace: 7 });
+    expect(wrong.body.valid).toBe(false);
+    expect(wrong.body.errors.namespace?.[0]).toMatch(/Expected a string/);
   });
 });
