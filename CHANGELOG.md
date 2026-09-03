@@ -1,5 +1,70 @@
 # @revenexx/integrations-node-devkit
 
+## 0.7.0
+
+### Minor Changes
+
+- a3f5a19: Support `ctx.state`, the tenant state store nodes gained in PO-374.
+
+  `createMockContext` now builds a `state` mock, and it is **stateful**: what the
+  node writes, it reads back. A node's interesting behaviour is the second run —
+  the one that finds the mapping it created the first time — and a mock that
+  forgot would only ever exercise the create branch. Seed what earlier runs left
+  behind with `state: { mappings, cursors, claims, digests }`, force the engine's
+  refusal with `stateError`, and assert on the calls: every operation is a
+  `vi.fn()`.
+
+  It reads back _when the store would let it_. A mapping and a claim take effect
+  immediately; a cursor and a digest are staged and adopted only once the run
+  completes, so `cursor.get` answers what the last completed run left. The mock
+  context gains `completeRun()` for that ending — call it between two `execute`
+  calls to play the second run, leave it out to play the run that failed after
+  advancing its watermark. Re-pointing either side of an existing correlation is
+  refused, and a `ttlSeconds` outside 1…31536000 is refused rather than clamped:
+  the rules a node would otherwise meet for the first time in production.
+
+  The local preview's `execute:test` is wired to the dev store too, so a node that
+  correlates ids behaves on its second call like a second run, and a preview call
+  that fails leaves its staged cursors and digests behind. That the store is
+  writable at all is a deliberate divergence from production, where author-time
+  execution is read-only — see the fidelity caveats in the README.
+
+  `POST /nodes/{slug}/{version}/config:validate` now honours `showIf` and knows
+  `state-ref`, the two config-field additions that ride along in the same SDK
+  release (PO-410, PO-374). A setting whose condition does not hold is skipped
+  whole — not demanded when required, not type-checked either, because the editor
+  does not draw it — using the SDK's own `settingApplies` rather than a second
+  copy of the rule. That covers a `dynamic-schema` marker carrying the condition:
+  the group it stands for is neither demanded nor resolved, so no author-time
+  resolver runs for a group nobody is looking at. A `state-ref` is checked as the
+  namespace name it carries.
+
+  Requires `@revenexx/integrations-node-sdk` >= 1.0.0, which is where
+  `INodeContext.state` is declared. That SDK release is a major one precisely
+  because `state` is required — and this package is the reason it is felt
+  immediately: `MockContext` is `INodeContext & {…}`, so it cannot compile against
+  the new contract without supplying `state`.
+
+### Patch Changes
+
+- 4394123: The preview host pins `@revenexx/studio` ^0.2.2, so its dependencies install again
+
+  Moving the host to `@revenexx/studio-shared` ^0.3.0 left `@revenexx/studio` at `^0.1.3`,
+  and 0.3.x peers `@revenexx/studio` `^0.2.0`. Because a caret on a 0.x version pins the
+  minor, `^0.1.3` can never reach 0.2.x — so the two pins were unsatisfiable together and
+  `npm install` in the copied host failed outright with `ERESOLVE`, before Nuxt ever booted.
+  The devkit runs a plain `npm install` with no `--legacy-peer-deps`, so nothing papered over
+  it: every fresh preview was broken, not merely resolving oddly.
+
+  0.2.2 is the current release. Its only new peer, `vue-sonner` `^2.0.9`, is already
+  satisfied by the host's `^2.0.0` pin.
+
+  `@solar-icons/nuxt` stays on ^1.2.1 deliberately. Dependabot groups it with studio and
+  offers ^2.1.0, but `@revenexx/studio-shared` 0.3.x peers `@solar-icons/nuxt` `^1.2.0` in
+  both of its releases, so the major would trade this conflict for the same one one package
+  over — and v2 reworks the module options and the auto-import names the studio components
+  rely on. It waits until studio-shared moves.
+
 ## 0.6.0
 
 ### Minor Changes
