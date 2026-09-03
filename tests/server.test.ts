@@ -77,6 +77,87 @@ describe('execute:test (runs the real execute in-process)', () => {
     expect(body.logs).toEqual([{ level: 'info', message: 'executing playground', meta: { keys: ['category', 'extra'] } }]);
   });
 
+  /**
+   * The whole point of the state store is the *second* run. A preview that
+   * forgot between calls could only ever show the create branch, which is the
+   * one an author does not need help with.
+   */
+  it('remembers what a node correlated, so the second call takes the update branch', async () => {
+    const first = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { correlate: 'pim:12345' },
+    });
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ branch: 'created', outputs: { known: null } });
+
+    const second = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { correlate: 'pim:12345' },
+    });
+    expect(second.status).toBe(200);
+    expect(second.body).toMatchObject({ branch: 'updated', outputs: { known: 'erp:pim:12345' } });
+  });
+
+  /**
+   * A cursor is staged, not written: the run that advances the watermark does
+   * not read it back, and a run that fails afterwards leaves it where it was.
+   * Getting this wrong locally is invisible until a production run fails and
+   * silently skips everything it never read.
+   */
+  it('adopts a staged cursor only once the run completes', async () => {
+    const first = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { advance: '2026-08-26T10:00:00Z' },
+    });
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ outputs: { from: null } });
+
+    const second = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { advance: '2026-08-27T10:00:00Z' },
+    });
+    expect(second.body).toMatchObject({ outputs: { from: { updatedAfter: '2026-08-26T10:00:00Z' } } });
+  });
+
+  it('drops what a failed run staged, so the next one reads the old watermark', async () => {
+    await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { advance: '2026-09-01T10:00:00Z' },
+    });
+
+    const failed = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { advance: '2026-09-02T10:00:00Z', thenBoom: true },
+    });
+    expect(failed.status).toBe(502);
+
+    const next = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { advance: '2026-09-03T10:00:00Z' },
+    });
+    expect(next.body).toMatchObject({ outputs: { from: { updatedAfter: '2026-09-01T10:00:00Z' } } });
+  });
+
+  /**
+   * The four roles share a namespace and a key without sharing a slot. A digest
+   * written for the entity that was just correlated must not become the answer
+   * `mapping.get` gives, or the next call takes the update branch on a partner
+   * id that was never a partner id.
+   */
+  it('keeps a correlation and a digest for the same key apart', async () => {
+    const first = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { correlate: 'pim:77', digestToo: true },
+    });
+    expect(first.body).toMatchObject({ branch: 'created' });
+
+    const second = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { correlate: 'pim:77' },
+    });
+    expect(second.body).toMatchObject({ branch: 'updated', outputs: { known: 'erp:pim:77' } });
+  });
+
+  it('keeps a different key on the create branch', async () => {
+    await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', { inputs: { correlate: 'pim:1' } });
+
+    const other = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { correlate: 'pim:2' },
+    });
+    expect(other.body).toMatchObject({ branch: 'created' });
+  });
+
   it('reports a throwing node as 502 with the logs it managed to emit', async () => {
     const { status, body } = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', { inputs: { boom: true } });
     expect(status).toBe(502);

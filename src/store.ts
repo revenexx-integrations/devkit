@@ -72,25 +72,55 @@ export interface TriggerRecord {
   updatedAt: string;
 }
 
+/**
+ * One entry of the tenant state store (PO-374), flattened across the four
+ * roles: `key` is the mapping's left id, the cursor's partition key, the
+ * claimed key or the digest's entity key, and `value` the partner id, the
+ * watermark, the expiry or the hash.
+ *
+ * The mock keeps them in one list rather than four tables because nothing here
+ * enforces integrity — the real store's constraints are the product, this is a
+ * scratchpad that makes a node's second run behave like a second run.
+ */
+export interface StateEntryRecord {
+  namespace: string;
+  role: 'mapping' | 'cursor' | 'dedupe' | 'digest';
+  key: string;
+  value: unknown;
+  updatedAt: string;
+}
+
 export interface DevStoreSnapshot {
   schemaVersion: number;
   credentials: CredentialRecord[];
   secrets: SecretRecord[];
   workflows: WorkflowRecord[];
   triggers: TriggerRecord[];
+  stateEntries?: StateEntryRecord[];
   nextWorkflowId: number;
 }
 
 /**
  * Bumped to 2 when workflows moved from `definition` to the contract's `blob` /
- * `blob_definition_version` / `active` / `execution_mode`. `loadState` discards an
- * overlay whose version does not match, which is the migration: seeds are the
- * source of truth, the overlay is disposable session state.
+ * `blob_definition_version` / `active` / `execution_mode`, and to 3 when the
+ * state store (PO-374) arrived. `loadState` discards an overlay whose version
+ * does not match, which is the migration: seeds are the source of truth, the
+ * overlay is disposable session state.
  */
-export const STORE_SCHEMA_VERSION = 2;
+export const STORE_SCHEMA_VERSION = 3;
 
 function now(): string {
   return new Date().toISOString();
+}
+
+/**
+ * The role is part of the identity, not a label on the record: the four roles
+ * share a namespace and a key freely — the entity that was just correlated is
+ * usually the one a digest is written for — and one slot per `(namespace, key)`
+ * would let a digest become the answer a mapping lookup gives.
+ */
+function stateKey(role: StateEntryRecord['role'], namespace: string, key: string): string {
+  return `${role}\u0000${namespace}\u0000${key}`;
 }
 
 export class DevStore {
@@ -98,6 +128,8 @@ export class DevStore {
   private secrets = new Map<string, SecretRecord>();
   private workflows = new Map<number, WorkflowRecord>();
   private triggers = new Map<string, TriggerRecord>();
+  /** Keyed by `${role}\u0000${namespace}\u0000${key}` — a NUL occurs in no part. */
+  private stateEntries = new Map<string, StateEntryRecord>();
   private nextWorkflowId = 1;
 
   /**
@@ -353,6 +385,25 @@ export class DevStore {
 
   // ------------------------------------------------------------- persistence
 
+  // ------------------------------------------------------------------ state
+
+  /** The stored entry for a role/namespace/key, or undefined when unknown. */
+  getStateEntry(role: StateEntryRecord['role'], namespace: string, key: string): StateEntryRecord | undefined {
+    return this.stateEntries.get(stateKey(role, namespace, key));
+  }
+
+  /** Every entry a namespace holds in one role — how a reverse mapping lookup is answered. */
+  listStateEntries(role: StateEntryRecord['role'], namespace: string): StateEntryRecord[] {
+    return [...this.stateEntries.values()].filter(e => e.role === role && e.namespace === namespace);
+  }
+
+  putStateEntry(entry: Omit<StateEntryRecord, 'updatedAt'>): StateEntryRecord {
+    const record: StateEntryRecord = { ...entry, updatedAt: now() };
+    this.stateEntries.set(stateKey(entry.role, entry.namespace, entry.key), record);
+    this.onChange?.();
+    return record;
+  }
+
   toSnapshot(): DevStoreSnapshot {
     return {
       schemaVersion: STORE_SCHEMA_VERSION,
@@ -360,6 +411,7 @@ export class DevStore {
       secrets: [...this.secrets.values()],
       workflows: [...this.workflows.values()],
       triggers: [...this.triggers.values()],
+      stateEntries: [...this.stateEntries.values()],
       nextWorkflowId: this.nextWorkflowId,
     };
   }
@@ -369,6 +421,7 @@ export class DevStore {
     this.secrets = new Map(snapshot.secrets.map(s => [s.key, s]));
     this.workflows = new Map(snapshot.workflows.map(w => [w.id, w]));
     this.triggers = new Map(snapshot.triggers.map(t => [t.id, t]));
+    this.stateEntries = new Map((snapshot.stateEntries ?? []).map(e => [stateKey(e.role, e.namespace, e.key), e]));
     this.nextWorkflowId = snapshot.nextWorkflowId ?? Math.max(0, ...snapshot.workflows.map(w => w.id)) + 1;
   }
 
@@ -390,6 +443,9 @@ export class DevStore {
     }
     for (const t of snapshot.triggers) {
       this.triggers.set(t.id, t);
+    }
+    for (const e of snapshot.stateEntries ?? []) {
+      this.stateEntries.set(stateKey(e.role, e.namespace, e.key), e);
     }
     this.nextWorkflowId = Math.max(this.nextWorkflowId, snapshot.nextWorkflowId ?? 0, ...snapshot.workflows.map(w => w.id + 1));
   }

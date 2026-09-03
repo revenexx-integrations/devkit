@@ -8,10 +8,13 @@ import {
   type ICredentialTestResult,
   type INode,
   type INodeAuthorContext,
+  type INodeState,
   type IOutputPort,
   isOAuthAuthorizeCredential,
+  settingApplies,
 } from '@revenexx/integrations-node-sdk';
 import { DevApiError } from './errors.js';
+import { assertNotRepointed, assertTtlInRange, DEFAULT_CLAIM_TTL_SECONDS } from './state-rules.js';
 import type { LoadedPackage } from './loader.js';
 import type { DevStore } from './store.js';
 
@@ -96,6 +99,95 @@ export async function resolveCredentialInstance(loaded: LoadedPackage, store: De
   const cred = findCredential(loaded, instance.credentialTypeSlug);
   const ctx = credentialContext(store, credentialId);
   return cred.resolve(ctx, instance.config, instance.durableCreds);
+}
+
+/**
+ * `ctx.state` for one preview run (PO-374), backed by the dev store — so a node
+ * that correlates ids behaves on its second call like a second run.
+ *
+ * Returns the state surface together with the `commit` that ends the run. A
+ * mapping and a claim go straight to the store, because a correlation dropped by
+ * a later failure is how the next run creates a duplicate; a cursor and a digest
+ * are staged here and written only when `commit` is called, so a read during the
+ * run answers what the last *completed* run left. That is the store's visibility
+ * rule, and it is the reason `INodeState` has four operations instead of a
+ * generic get/set.
+ *
+ * **Deliberately divergent from production in one respect**, and the one place
+ * this mock does not mirror the real API: there, author-time execution is
+ * read-only, because a correlation created by a test click would be
+ * indistinguishable from one a production run made and the next real run would
+ * trust it. Locally there is no such stake — the whole store is a disposable
+ * overlay in `.revenexx-dev/` — and refusing writes would make it impossible to
+ * exercise the very nodes the state store exists for. The divergence is noted in
+ * the README.
+ */
+function createRunState(store: DevStore): { state: INodeState; commit: () => void } {
+  /** Staged for this run: written to the store by `commit`, dropped otherwise. */
+  const staged: Array<{ namespace: string; role: 'cursor' | 'digest'; key: string; value: unknown }> = [];
+  const stage = (entry: (typeof staged)[number]): void => {
+    staged.push(entry);
+  };
+
+  const state: INodeState = {
+    mapping: {
+      async get(namespace, key, side = 'left') {
+        if (side === 'left') {
+          const entry = store.getStateEntry('mapping', namespace, key);
+          return entry ? String(entry.value) : null;
+        }
+        const match = store.listStateEntries('mapping', namespace).find(e => String(e.value) === key);
+        return match ? match.key : null;
+      },
+      async put(namespace, left, right) {
+        assertNotRepointed(
+          namespace,
+          store.listStateEntries('mapping', namespace).map(e => [e.key, String(e.value)] as [string, string]),
+          left,
+          right,
+        );
+        store.putStateEntry({ namespace, role: 'mapping', key: left, value: right });
+      },
+    },
+    cursor: {
+      async get(namespace, partitionKey = '') {
+        return store.getStateEntry('cursor', namespace, partitionKey)?.value;
+      },
+      async set(namespace, value, partitionKey = '') {
+        stage({ namespace, role: 'cursor', key: partitionKey, value });
+      },
+    },
+    async claim(namespace, key, opts) {
+      assertTtlInRange(opts?.ttlSeconds);
+      const held = store.getStateEntry('dedupe', namespace, key);
+      // Expiry is honoured so a short TTL can actually be exercised locally,
+      // rather than a claim looking permanent for the whole session.
+      if (held && Number(held.value) > Date.now()) {
+        return false;
+      }
+      const ttlSeconds = opts?.ttlSeconds ?? DEFAULT_CLAIM_TTL_SECONDS;
+      store.putStateEntry({ namespace, role: 'dedupe', key, value: Date.now() + ttlSeconds * 1000 });
+      return true;
+    },
+    digest: {
+      async unchanged(namespace, entityKey, digest) {
+        return store.getStateEntry('digest', namespace, entityKey)?.value === digest;
+      },
+      async set(namespace, entityKey, digest) {
+        stage({ namespace, role: 'digest', key: entityKey, value: digest });
+      },
+    },
+  };
+
+  return {
+    state,
+    commit() {
+      for (const entry of staged) {
+        store.putStateEntry(entry);
+      }
+      staged.length = 0;
+    },
+  };
 }
 
 function authorContext(loaded: LoadedPackage, store: DevStore, config: Record<string, unknown>, locale?: string): INodeAuthorContext {
@@ -233,6 +325,10 @@ function validateField(field: IConfigField, value: unknown, errors: Record<strin
   switch (field.type) {
     case 'string':
     case 'secret-ref':
+    // A `state-ref` carries the chosen namespace NAME, so a string is all there
+    // is to check here: which names exist is the workflow's declaration, and
+    // nothing declares one locally (see the README's fidelity caveats).
+    case 'state-ref':
     case 'expression':
       if (typeof value !== 'string') {
         push('Expected a string.');
@@ -318,6 +414,14 @@ function validateField(field: IConfigField, value: unknown, errors: Record<strin
  * flattened keys. Deep cross-field validation is intentionally out of scope
  * (the production service does that on save); this mirrors the mock's
  * "light, schema-based" fidelity. Unknown extra keys are ignored.
+ *
+ * A field whose `showIf` does not hold (SDK 1.0.0, PO-410) is skipped whole —
+ * not demanded when required, and not type-checked either. The editor does not
+ * draw it, so whatever is left under its key is a leftover from a choice the
+ * author has since changed, and refusing to save because of it would leave them
+ * with an error against a field they cannot see. `settingApplies` comes from the
+ * SDK rather than being re-implemented here: the editor drawing the field and
+ * this validator deciding whether to demand it have to agree word for word.
  */
 export async function validateNodeConfig(loaded: LoadedPackage, store: DevStore, input: ValidateNodeConfigInput): Promise<ValidateNodeConfigResult> {
   const node = findNode(loaded, input.slug, input.version);
@@ -329,10 +433,19 @@ export async function validateNodeConfig(loaded: LoadedPackage, store: DevStore,
     if (field.type === 'dynamic-schema') {
       continue; // resolved child fields are validated below
     }
+    if (!settingApplies(field, config)) {
+      continue; // its `showIf` says it is not on screen — see the doc comment
+    }
     validateField(field, config[field.key], errors);
   }
 
-  if (fields.some(f => f.type === 'dynamic-schema') && node.resolveConfigSchema) {
+  // A `dynamic-schema` marker can carry a `showIf` of its own — the condition
+  // sits on `IConfigFieldBase`, not on the leaf types — and then the whole group
+  // it stands for is off screen. `resolveConfigSchema` is per node rather than
+  // per field, so a node with several markers resolves as soon as one of them
+  // applies: which children came from which marker is not something the callback
+  // says, and demanding none of them would be the worse guess of the two.
+  if (fields.some(f => f.type === 'dynamic-schema' && settingApplies(f, config)) && node.resolveConfigSchema) {
     const ctx = authorContext(loaded, store, config, input.locale);
     let children: IConfigField[];
     try {
@@ -344,6 +457,9 @@ export async function validateNodeConfig(loaded: LoadedPackage, store: DevStore,
       throw new DevApiError(502, `Node resolve failed: ${(err as Error).message}`);
     }
     for (const child of children) {
+      if (!settingApplies(child, config)) {
+        continue;
+      }
       validateField(child, config[child.key], errors);
     }
   }
@@ -399,6 +515,7 @@ export async function executeNodeTest(loaded: LoadedPackage, store: DevStore, in
   };
 
   const timeoutMs = Math.max(MIN_TIMEOUT_MS, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const run = createRunState(store);
   const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<never>((_resolve, reject) => {
@@ -425,10 +542,16 @@ export async function executeNodeTest(loaded: LoadedPackage, store: DevStore, in
         return (await resolveCredentialInstance(loaded, store, id)).credentials;
       },
     },
+    state: run.state,
   };
 
   try {
     const result = await Promise.race([node.execute(ctx, { ...input.config, ...input.inputs }), expired]);
+    // The run completed, so what it staged is adopted. A node that threw, or one
+    // the timeout cut off, leaves its cursors and digests where they were — the
+    // failed-run case the staging rule exists for, and the one an author is most
+    // likely to have got wrong.
+    run.commit();
     return { outputs: result.outputs ?? {}, branch: result.branch ?? null, logs };
   } catch (err) {
     if (err instanceof DevApiError) {
