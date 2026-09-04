@@ -8,6 +8,7 @@ import {
   type ICredentialTestResult,
   type INode,
   type INodeAuthorContext,
+  type INodeDescription,
   type INodeState,
   type IOutputPort,
   isOAuthAuthorizeCredential,
@@ -49,6 +50,34 @@ export function nodeVersions(loaded: LoadedPackage, slug: string): string[] {
     .filter(n => n.description.slug === slug)
     .map(n => n.description.version)
     .sort((a, b) => compareSemver(b, a));
+}
+
+/**
+ * The order `GET /nodes` lists a package's nodes in: every version of a slug
+ * together, newest first, with the slugs themselves in the order the package
+ * exports them.
+ *
+ * Export order alone is not enough any more. The registry answers each slug's
+ * versions semver-descending, and the studio's catalogue takes that order as
+ * given rather than parsing a semver of its own — since
+ * `@revenexx/studio-integrations` 1.3.0 `newerExecutableVersions()` reads "newer
+ * than the pinned one" as "earlier in this array". A package that exports 1.0.0
+ * before 2.0.0 — the order a human writes them in — would therefore have the
+ * inspector announce the OLDER version as the upgrade, and say nothing about the
+ * real one. `GET /nodes/{slug}/versions` has always sorted; this is the same
+ * order on the listing the catalogue is actually built from.
+ */
+export function listNodesNewestFirst(nodes: readonly INodeDescription[]): INodeDescription[] {
+  const bySlug = new Map<string, INodeDescription[]>();
+  for (const node of nodes) {
+    const group = bySlug.get(node.slug);
+    if (group) {
+      group.push(node);
+    } else {
+      bySlug.set(node.slug, [node]);
+    }
+  }
+  return [...bySlug.values()].flatMap(group => [...group].sort((a, b) => compareSemver(b.version, a.version)));
 }
 
 export function findNode(loaded: LoadedPackage, slug: string, version?: string): INode {

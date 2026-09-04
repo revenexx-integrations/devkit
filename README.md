@@ -87,6 +87,14 @@ next version bump. To change the host, take a copy that is yours:
 > `POST`s to `/nodes/{slug}/{version}/config:resolve`, which the mock serves).
 > The **Workflows** surface is hidden until phase 2, because workflow execution is
 > not mocked; the Temporal parts (run history, `…/runs/*`) are intentionally absent.
+>
+> Three things a node declares are drawn by the inspector as the product draws
+> them, as of `@revenexx/studio-integrations` 1.3.0: a `showIf` condition hides
+> the setting it is written on until it holds (and the mock's `config:validate`
+> skips that setting too, so the two agree), a `state-ref` setting is a picker
+> rather than a raw JSON box, and a node exported in more than one version can be
+> moved between them from inside the dialog. What each move costs is listed
+> before it happens.
 
 The mock is checked against the service's own OpenAPI contract — see
 [docs/architecture.md](docs/architecture.md#staying-in-step-with-the-real-api).
@@ -235,14 +243,16 @@ This is a faithful **dev** stand-in, not the production service:
 - **No namespace declaration and no role enforcement.** Any namespace name
   works, where the real engine refuses one the workflow did not declare —
   including the per-node half, where only the namespaces a node's own
-  `state-ref` settings name are reachable. Nothing local can enforce that: there
-  is no workflow declaring namespaces to check against.
-- **A `state-ref` setting is drawn as a JSON box, not a picker.** The editor's
-  picker — the workflow's namespaces of that role, and the offer to declare a
-  new one — does not exist yet in `studio-integrations`, and a field type the
-  editor does not know falls back to its raw JSON control. Type the namespace
-  name as a JSON string (`"article"`). The value reaches `execute` either way,
-  so the node can be exercised; only the choosing is missing. `config:validate`
-  does check it is a string.
+  `state-ref` settings name are reachable. Nothing local can enforce that: the
+  declarations live in a workflow's blob, and the preview has no workflow.
+- **A `state-ref` picker offers what you declared in it, and only for this
+  session.** The picker is real from `studio-integrations` 1.3.0 on — the
+  namespaces of the field's `stateRole`, and the offer to declare a new one — but
+  in the product its list comes from the workflow being edited. The preview's
+  node page owns that list instead: it starts empty, a declaration kept by Save
+  joins it, and a browser reload starts over. Nothing is written to the blob,
+  because there is none, and the mock does not check a namespace against it
+  either — see the bullet above.
 - The state entries are not exposed over the mock API, so the Cockpit's State
-  view is inactive in the preview.
+  view — and the editor's own State dialog, which edits a workflow's `state`
+  block — is inactive in the preview.
