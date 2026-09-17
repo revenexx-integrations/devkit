@@ -8,6 +8,7 @@ import {
   type ICredentialTestResult,
   type INode,
   type INodeAuthorContext,
+  type INodeDescription,
   type INodeState,
   type IOutputPort,
   isOAuthAuthorizeCredential,
@@ -32,16 +33,72 @@ const noopLogger = {
   error() {},
 };
 
+/**
+ * Splits `1.2.3-rc.1+build.5` into its three numeric parts and its prerelease
+ * identifiers. Build metadata is dropped: semver says it takes no part in
+ * precedence.
+ */
+function parseSemver(version: string): { core: number[]; pre: string[] } {
+  const [withoutBuild] = version.split('+');
+  const dash = withoutBuild!.indexOf('-');
+  const core = (dash === -1 ? withoutBuild! : withoutBuild!.slice(0, dash)).split('.').map(n => Number.parseInt(n, 10) || 0);
+  const pre = dash === -1 ? [] : withoutBuild!.slice(dash + 1).split('.');
+  return { core, pre };
+}
+
+/**
+ * Semver precedence for prerelease identifiers (semver.org §11.4): a numeric
+ * identifier compares numerically and ranks below an alphanumeric one, an
+ * alphanumeric one compares ASCII-wise, and when one set runs out first the
+ * shorter ranks lower — `1.0.0-rc.1` below `1.0.0-rc.1.1`.
+ */
+function comparePrerelease(a: string[], b: string[]): number {
+  // A version WITHOUT a prerelease outranks the same version with one.
+  if (a.length === 0 || b.length === 0) {
+    return (a.length === 0 ? 1 : 0) - (b.length === 0 ? 1 : 0);
+  }
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const ia = a[i];
+    const ib = b[i];
+    if (ia === undefined || ib === undefined) {
+      return ia === undefined ? -1 : 1;
+    }
+    const na = /^\d+$/.test(ia) ? Number(ia) : null;
+    const nb = /^\d+$/.test(ib) ? Number(ib) : null;
+    if (na !== null && nb !== null) {
+      if (na !== nb) {
+        return na - nb;
+      }
+      continue;
+    }
+    if (na !== null || nb !== null) {
+      return na !== null ? -1 : 1; // numeric ranks below alphanumeric
+    }
+    if (ia !== ib) {
+      return ia < ib ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Orders two versions, newest last. Prereleases are part of the answer rather
+ * than noise: array position is what the studio's catalogue reads as "a newer
+ * version exists" (see `listNodesNewestFirst`), and a naive parse put
+ * `2.0.0-beta.1` level with `2.0.0` — a tie a stable sort then broke by export
+ * order, so a package exporting its beta first would have offered an author
+ * pinned to the stable an "upgrade" to the beta.
+ */
 function compareSemver(a: string, b: string): number {
-  const pa = a.split('.').map(n => Number.parseInt(n, 10) || 0);
-  const pb = b.split('.').map(n => Number.parseInt(n, 10) || 0);
+  const pa = parseSemver(a);
+  const pb = parseSemver(b);
   for (let i = 0; i < 3; i++) {
-    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    const diff = (pa.core[i] ?? 0) - (pb.core[i] ?? 0);
     if (diff !== 0) {
       return diff;
     }
   }
-  return 0;
+  return comparePrerelease(pa.pre, pb.pre);
 }
 
 export function nodeVersions(loaded: LoadedPackage, slug: string): string[] {
@@ -49,6 +106,34 @@ export function nodeVersions(loaded: LoadedPackage, slug: string): string[] {
     .filter(n => n.description.slug === slug)
     .map(n => n.description.version)
     .sort((a, b) => compareSemver(b, a));
+}
+
+/**
+ * The order `GET /nodes` lists a package's nodes in: every version of a slug
+ * together, newest first, with the slugs themselves in the order the package
+ * exports them.
+ *
+ * Export order alone is not enough any more. The registry answers each slug's
+ * versions semver-descending, and the studio's catalogue takes that order as
+ * given rather than parsing a semver of its own — since
+ * `@revenexx/studio-integrations` 1.3.0 `newerExecutableVersions()` reads "newer
+ * than the pinned one" as "earlier in this array". A package that exports 1.0.0
+ * before 2.0.0 — the order a human writes them in — would therefore have the
+ * inspector announce the OLDER version as the upgrade, and say nothing about the
+ * real one. `GET /nodes/{slug}/versions` has always sorted; this is the same
+ * order on the listing the catalogue is actually built from.
+ */
+export function listNodesNewestFirst(nodes: readonly INodeDescription[]): INodeDescription[] {
+  const bySlug = new Map<string, INodeDescription[]>();
+  for (const node of nodes) {
+    const group = bySlug.get(node.slug);
+    if (group) {
+      group.push(node);
+    } else {
+      bySlug.set(node.slug, [node]);
+    }
+  }
+  return [...bySlug.values()].flatMap(group => [...group].sort((a, b) => compareSemver(b.version, a.version)));
 }
 
 export function findNode(loaded: LoadedPackage, slug: string, version?: string): INode {

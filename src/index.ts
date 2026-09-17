@@ -49,6 +49,7 @@ export {
   findCredential,
   findCredentialType,
   findNode,
+  listNodesNewestFirst,
   nodeVersions,
   type ResolveNodeConfigInput,
   type ResolveNodeConfigResult,
