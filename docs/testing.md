@@ -116,3 +116,11 @@ the whole group is off screen — its children are neither demanded nor resolved
 author-time resolver runs for a group nobody is looking at. `resolveConfigSchema` is per
 node rather than per field, so a node carrying several markers resolves as soon as one of
 them applies.
+
+It reads a node's settings **one level deep**. A field declaring `items` (a repeating row)
+or `properties` (an object) is checked for being an array or an object, plus the
+`minLength`/`maxLength` on the field itself; the sub-settings inside it are not demanded
+when required, not type-checked, and their `showIf` is not resolved per row. From
+`studio-integrations` 1.4.0 the inspector draws all three (PO-436), so this is the one
+place where the preview is ahead of the validator rather than behind it: a nested setting
+the dialog marks required is not refused here.

@@ -95,6 +95,18 @@ next version bump. To change the host, take a copy that is yours:
 > rather than a raw JSON box, and a node exported in more than one version can be
 > moved between them from inside the dialog. What each move costs is listed
 > before it happens.
+>
+> From 1.4.0 the Parameters tab draws a node's settings in the order the node
+> declares them, rather than every required one first: four or fewer are all
+> shown, and past the fourth a setting stands when it is required and folds away
+> when it is not. The lever is the manifest — a setting that is central to a node
+> belongs near the top of its `config`, whether or not it is required. A setting
+> inside a repeating row is drawn as what it declares too (its options, its
+> default, its description, its `showIf` resolved against **that** row) instead
+> of as an empty text box, and a new row starts from the declared defaults rather
+> than from an empty string under every key. An option declared with an empty
+> value — "unchanged", "all kinds" — is selectable rather than fatal to the
+> dialog.
 
 The mock is checked against the service's own OpenAPI contract — see
 [docs/architecture.md](docs/architecture.md#staying-in-step-with-the-real-api).
@@ -225,6 +237,13 @@ This is a faithful **dev** stand-in, not the production service:
   client-side schema validation is inactive.
 - `POST /nodes/{slug}/{version}/config:validate` exists only here, not in the real
   API.
+- **`config:validate` reads a node's settings one level deep.** A setting
+  declared inside a repeating row or an object (`items` / `properties`) is
+  checked for being an array or an object and no further: its sub-settings are
+  not demanded when required, not type-checked, and their own `showIf` is not
+  resolved per row. The inspector draws all three from `studio-integrations`
+  1.4.0 on, so on nested settings the preview is now ahead of the validator —
+  the mirror image of the gap 1.3.0 closed.
 - **The state store (PO-374) is writable here, and read-only in production.** In
   the real product an author-time test run may read `ctx.state` but not write to
   it: a correlation created by a test click is indistinguishable from one a
