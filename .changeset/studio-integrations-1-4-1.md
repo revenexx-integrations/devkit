@@ -45,6 +45,19 @@ two together. The contract test cannot catch this class of drift at all — Open
 declares shapes, not order — which is now written into
 `docs/architecture.md`.
 
+One order is now one rule, rather than sorted in the places someone remembered.
+`GET /nodes/{slug}/latest` and `DELETE` on the same path resolved `latest` as the
+FIRST export of the slug while `config:resolve`, `config:validate` and
+`execute:test` went through a helper that sorts — so for that same package the
+mock would describe 1.0.0 and execute 2.0.0 under one URL. Both now go through
+the ordering `GET /nodes` is built from. And a prerelease is ranked below its own
+release: `2.0.0-beta.1` used to parse its patch as `0` and compare equal to
+`2.0.0`, a tie the stable sort broke by export order, so a package exporting its
+beta first offered an author pinned to the stable an "upgrade" to the beta — the
+same wrong-direction prompt, from a different cause. Prerelease identifiers
+follow semver precedence (numeric below alphanumeric, shorter set below longer),
+and build metadata is ignored.
+
 **1.4.0 rearranges the dialog the preview exists to show.** Three of its
 changesets land on the node configuration surface and on nothing else the host
 mounts:

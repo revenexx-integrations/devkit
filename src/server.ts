@@ -242,9 +242,17 @@ function nodeApiContext(loaded: LoadedPackage) {
 /**
  * Resolves a node's MANIFEST entry (what `GET /nodes` projects), or throws 404.
  * Distinct from resolve.ts's `findNode`, which returns the live INode instance.
+ *
+ * `latest` goes through `listNodesNewestFirst`, the same ordering `GET /nodes`
+ * is built from, rather than taking the first export of the slug. `findNode`
+ * sorts, so export order here would have `GET /nodes/{slug}/latest` DESCRIBE one
+ * version while `config:resolve`, `config:validate` and `execute:test` ran
+ * another under the same URL — for a package exporting 1.0.0 before 2.0.0, the
+ * ordinary way round to write them.
  */
 function findManifestNode(loaded: LoadedPackage, slug: string, version: string) {
-  const node = loaded.manifest.nodes.find(n => n.slug === slug && (version === 'latest' || n.version === version));
+  const matches = loaded.manifest.nodes.filter(n => n.slug === slug);
+  const node = version === 'latest' ? listNodesNewestFirst(matches)[0] : matches.find(n => n.version === version);
   if (!node) {
     throw new DevApiError(404, `Node '${slug}@${version}' not found.`);
   }

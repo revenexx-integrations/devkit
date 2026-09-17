@@ -322,7 +322,15 @@ describe('node listing order', () => {
   }
 
   const multi = resolveExports({
-    NODES: [new Versioned('devkit:alpha', '1.0.0'), new Versioned('devkit:alpha', '2.0.0'), new Versioned('devkit:beta', '0.9.0'), new Versioned('devkit:alpha', '1.10.0')] as unknown as INode[],
+    NODES: [
+      new Versioned('devkit:alpha', '1.0.0'),
+      new Versioned('devkit:alpha', '2.0.0'),
+      new Versioned('devkit:beta', '0.9.0'),
+      new Versioned('devkit:alpha', '1.10.0'),
+      new Versioned('devkit:gamma', '2.0.0-beta.1'),
+      new Versioned('devkit:gamma', '2.0.0'),
+      new Versioned('devkit:gamma', '2.0.0-rc.2'),
+    ] as unknown as INode[],
   });
   const multiServer = createDevServer({ getPackage: () => multi, store: new DevStore() });
   let multiBase = '';
@@ -344,7 +352,53 @@ describe('node listing order', () => {
       'devkit:alpha@1.10.0',
       'devkit:alpha@1.0.0',
       'devkit:beta@0.9.0',
+      // A prerelease ranks below its own release, and `rc` above `beta`.
+      'devkit:gamma@2.0.0',
+      'devkit:gamma@2.0.0-rc.2',
+      'devkit:gamma@2.0.0-beta.1',
     ]);
+  });
+
+  /**
+   * `2.0.0-beta.1` used to parse its patch as `parseInt('0-beta') === 0` and so
+   * compare EQUAL to `2.0.0`; `Array.prototype.sort` is stable, so the tie fell
+   * back to export order and a package exporting the prerelease first listed it
+   * on top. `newerExecutableVersions()` reads that as "the beta is newer than the
+   * stable" and offers an author pinned to 2.0.0 an upgrade to the beta.
+   */
+  it('ranks a prerelease below its own release on GET /nodes/{slug}/versions too', async () => {
+    const res = await fetch(`${multiBase}/nodes/devkit%3Agamma/versions`);
+    const body = (await res.json()) as { data: string[] };
+    expect(body.data).toEqual(['2.0.0', '2.0.0-rc.2', '2.0.0-beta.1']);
+  });
+
+  /**
+   * `latest` has to mean the same version everywhere it appears in a URL. The
+   * manifest read (`GET /nodes/{slug}/latest`, and `DELETE` on the same helper)
+   * resolved it as the FIRST export of the slug, while `config:resolve`,
+   * `config:validate` and `execute:test` all go through `findNode`, which sorts.
+   * Export order therefore had the mock DESCRIBE one version and EXECUTE another
+   * under a single URL.
+   */
+  it("resolves GET /nodes/{slug}/latest to the head of that slug's group", async () => {
+    const listed = await fetch(`${multiBase}/nodes`);
+    const listedBody = (await listed.json()) as { data: Array<{ slug: string; version: string }> };
+
+    for (const slug of ['devkit:alpha', 'devkit:beta', 'devkit:gamma']) {
+      const head = listedBody.data.find(n => n.slug === slug)!;
+      const res = await fetch(`${multiBase}/nodes/${encodeURIComponent(slug)}/latest`);
+      const body = (await res.json()) as { slug: string; version: string };
+      expect(body.version, slug).toBe(head.version);
+    }
+  });
+
+  /** The version `latest` DESCRIBES is the one it RESOLVES config against. */
+  it('describes and executes the same version under latest', async () => {
+    const described = await fetch(`${multiBase}/nodes/devkit%3Agamma/latest`);
+    const describedBody = (await described.json()) as { version: string };
+    const resolved = await fetch(`${multiBase}/nodes/devkit%3Agamma/${describedBody.version}`);
+    expect(resolved.status).toBe(200);
+    expect(describedBody.version).toBe('2.0.0');
   });
 
   it('lists the same versions as GET /nodes/{slug}/versions, in the same order', async () => {

@@ -196,4 +196,7 @@ Two limits worth knowing:
   no test here notices that the studio's catalogue reads "a newer version of this node
   exists" as position in it (`newerExecutableVersions`, from studio-integrations 1.3.0) —
   an assumption the mock satisfies by sorting each slug's versions semver-descending, and
-  which `tests/server.test.ts` pins from this side only.
+  which `tests/server.test.ts` pins from this side only. The same blind spot covers
+  `latest`: nothing in the contract says `GET /nodes/{slug}/latest` has to name the
+  version `…/config:resolve` and `…/execute:test` run under that URL, so the mock routes
+  every `latest` through one ordering and `tests/server.test.ts` asserts the two agree.
