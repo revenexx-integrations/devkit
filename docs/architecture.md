@@ -46,7 +46,11 @@ Two node endpoints do the interesting work:
   the manifest's field rules and returns per-field errors.
 
 OAuth is mocked end to end: `POST /credentials/{id}/oauth/authorize-url` builds the
-authorize URL, and `/credentials/oauth/callback` exchanges the code.
+authorize URL, and `/credentials/oauth/callback` exchanges the code. Both hand your
+credential the redirect URI `http://<host>:<port>/api/v1/credentials/oauth/callback`,
+built from the address the request came in on — with `--port 3555` that is
+`http://localhost:3555/api/v1/credentials/oauth/callback`, which is what you register
+with the provider.
 
 ## The preview host
 
