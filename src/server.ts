@@ -39,6 +39,27 @@ export function createDevServer(deps: DevServerDeps): http.Server {
   return http.createServer(createRequestListener(deps));
 }
 
+/**
+ * The origin the client used to reach us, taken from the `Host` header.
+ *
+ * `req.url` carries only the path, so a fixed base would drop the port and the
+ * OAuth redirect URI would point at port 80 — the provider then sends the user
+ * somewhere the dev server is not listening. The header is attacker-controlled
+ * in general; here it only ever shapes a URL handed back to the same caller on
+ * a dev-only server, and a malformed one falls back rather than throwing.
+ */
+function requestOrigin(req: http.IncomingMessage): string {
+  const host = req.headers.host;
+  if (!host) {
+    return 'http://localhost';
+  }
+  try {
+    return new URL(`http://${host}`).origin;
+  } catch {
+    return 'http://localhost';
+  }
+}
+
 async function handle(req: http.IncomingMessage, res: http.ServerResponse, deps: DevServerDeps): Promise<void> {
   const method = (req.method ?? 'GET').toUpperCase();
   if (method === 'OPTIONS') {
@@ -46,7 +67,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, deps:
     return;
   }
 
-  const url = new URL(req.url ?? '/', 'http://localhost');
+  const url = new URL(req.url ?? '/', requestOrigin(req));
   let pathname = url.pathname;
   if (pathname.startsWith('/api/v1')) {
     pathname = pathname.slice('/api/v1'.length);
@@ -352,7 +373,7 @@ async function handleCredentials(req: http.IncomingMessage, res: http.ServerResp
 
   // POST /credentials/{id}/oauth/authorize-url
   if (seg[2] === 'oauth' && seg[3] === 'authorize-url' && method === 'POST') {
-    const redirectUri = 'http://localhost/api/v1/credentials/oauth/callback';
+    const redirectUri = `${url.origin}/api/v1/credentials/oauth/callback`;
     // Dev flow: carry the credential id in `state` so the callback can find it.
     const result = await buildOAuthAuthorizeUrl(loaded, store, id, { redirectUri, state: id });
     return void sendJson(res, 200, { authorize_url: result.authorizeUrl });

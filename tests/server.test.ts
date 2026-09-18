@@ -1,8 +1,8 @@
 import type { AddressInfo } from 'node:net';
-import type { INode, IOutputPort } from '@revenexx/integrations-node-sdk';
+import type { ICredentialContext, INode, IOutputPort } from '@revenexx/integrations-node-sdk';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDevServer, DevStore, resolveExports } from '../src/index.js';
-import { PlaygroundNode, StaticCredential, template } from './fixtures/package.js';
+import { OAuthCredential, PlaygroundNode, StaticCredential, template } from './fixtures/package.js';
 
 const loaded = resolveExports({
   NODES: [new PlaygroundNode()],
@@ -407,5 +407,75 @@ describe('node listing order', () => {
     const versions = await fetch(`${multiBase}/nodes/devkit%3Aalpha/versions`);
     const versionsBody = (await versions.json()) as { data: string[] };
     expect(listedBody.data.filter(n => n.slug === 'devkit:alpha').map(n => n.version)).toEqual(versionsBody.data);
+  });
+});
+
+/**
+ * The redirect URI the devkit hands to a credential has to be reachable, and the
+ * authorize call and the token exchange have to agree on it — an OAuth provider
+ * rejects the exchange when the two differ.
+ *
+ * This needs its own listener: the assertion is precisely that the value follows
+ * the address the request arrived on, which a fixed `base` could not show.
+ */
+describe('oauth redirect uri', () => {
+  /** Records what the server passed, which the fixture credential does not expose. */
+  class RecordingOAuthCredential extends OAuthCredential {
+    authorizeRedirectUri: string | null = null;
+    exchangeRedirectUri: string | null = null;
+
+    override async buildAuthorizeUrl(ctx: ICredentialContext, config: Record<string, unknown>, params: { redirectUri: string; state: string }) {
+      this.authorizeRedirectUri = params.redirectUri;
+      return super.buildAuthorizeUrl(ctx, config, params);
+    }
+
+    override async exchangeCode(ctx: ICredentialContext, config: Record<string, unknown>, params: { code: string; redirectUri: string; codeVerifier?: string }) {
+      this.exchangeRedirectUri = params.redirectUri;
+      return super.exchangeCode(ctx, config, params);
+    }
+  }
+
+  const credential = new RecordingOAuthCredential();
+  const oauth = resolveExports({ NODES: [], CREDENTIALS: [credential], TEMPLATES: [] });
+  const oauthServer = createDevServer({ getPackage: () => oauth, store: new DevStore() });
+  let oauthBase = '';
+  let oauthOrigin = '';
+
+  beforeAll(async () => {
+    await new Promise<void>(resolve => oauthServer.listen(0, resolve));
+    oauthOrigin = `http://127.0.0.1:${(oauthServer.address() as AddressInfo).port}`;
+    oauthBase = `${oauthOrigin}/api/v1`;
+  });
+  afterAll(async () => {
+    await new Promise<void>(resolve => oauthServer.close(() => resolve()));
+  });
+
+  async function createCredential(): Promise<string> {
+    const res = await fetch(`${oauthBase}/credentials`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ credential_type_slug: 'devkit:oauth', name: 'OAuth', config: { clientId: 'cid', clientSecret: 'sec' } }),
+    });
+    return ((await res.json()) as { id: string }).id;
+  }
+
+  it('points the authorize redirect_uri at the address the dev server answers on', async () => {
+    const id = await createCredential();
+    const res = await fetch(`${oauthBase}/credentials/${id}/oauth/authorize-url`, { method: 'POST' });
+    const body = (await res.json()) as { authorize_url: string };
+
+    const expected = `${oauthOrigin}/api/v1/credentials/oauth/callback`;
+    expect(credential.authorizeRedirectUri).toBe(expected);
+    expect(new URL(body.authorize_url).searchParams.get('redirect_uri')).toBe(expected);
+  });
+
+  it('exchanges the code against the same redirect_uri it authorized with', async () => {
+    const id = await createCredential();
+    await fetch(`${oauthBase}/credentials/${id}/oauth/authorize-url`, { method: 'POST' });
+    const res = await fetch(`${oauthBase}/credentials/oauth/callback?code=abc&state=${id}`);
+
+    expect(res.status).toBe(200);
+    expect(credential.exchangeRedirectUri).toBe(credential.authorizeRedirectUri);
+    expect(credential.exchangeRedirectUri).toBe(`${oauthOrigin}/api/v1/credentials/oauth/callback`);
   });
 });
