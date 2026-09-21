@@ -1,7 +1,7 @@
 {
   "name": "@revenexx/integrations-node-devkit",
   "version": "0.7.0",
-  "description": "Local development kit for Revenexx integration node packages — a mock Integrations API for previewing nodes/credentials/templates in the Cockpit UI, plus a unit-testing harness. Dev/CI only, never bundled.",
+  "description": "Local development kit for Revenexx integration node packages \u2014 a mock Integrations API for previewing nodes/credentials/templates in the Cockpit UI, plus a unit-testing harness. Dev/CI only, never bundled.",
   "keywords": [
     "revenexx",
     "integrations",
@@ -63,7 +63,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
-    "@changesets/cli": "^2.31.0",
+    "@changesets/cli": "^3.0.3",
     "@revenexx/integrations-node-sdk": ">=1.0.0",
     "@types/node": "^24.0.0",
     "tsup": "^8.0.0",
