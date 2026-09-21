@@ -65,3 +65,10 @@ jobs:
         with:
           publish-script: npm run release
           github-token: ${{ steps.app-token.outputs.token }}
+          # v2 flipped this default to false, which pushes the version commit and
+          # the `v*` tag through the GitHub API instead of the Git CLI. Keep v1's
+          # mechanism: the API path creates a lightweight ref at the merge commit
+          # rather than pushing the annotated tag `changeset publish` builds locally,
+          # and it swallows a rejected push into a warning — a ruleset that turned
+          # the App down would leave the job green and the version untagged.
+          push-with-git-cli: true
