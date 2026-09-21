@@ -61,8 +61,14 @@ jobs:
       # Versioning ("changeset version") runs by default; publishing happens only
       # once the "Version Packages" PR is merged and no changesets remain.
       - name: Create release PR or publish
-        uses: changesets/action@v1
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
-          publish: npm run release
-        env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          publish-script: npm run release
+          github-token: ${{ steps.app-token.outputs.token }}
+          # v2 flipped this default to false, which pushes the version commit and
+          # the `v*` tag through the GitHub API instead of the Git CLI. Keep v1's
+          # mechanism: the API path creates a lightweight ref at the merge commit
+          # rather than pushing the annotated tag `changeset publish` builds locally,
+          # and it swallows a rejected push into a warning — a ruleset that turned
+          # the App down would leave the job green and the version untagged.
+          push-with-git-cli: true
