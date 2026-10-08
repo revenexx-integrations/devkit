@@ -25,8 +25,6 @@ package — all relative defaults resolve against the current working directory.
 | `--ui <dir>` | resolve the UI package | Serve a prebuilt static UI from this directory. |
 | `--no-ui` | off | Run API-only. |
 | `--open` | off | Open the preview in a browser. |
-| `--env <path>` | `.env` when present | Env file to load before seeds are applied, *instead of* `.env`. Needs Node >= 20.12. |
-| `--no-env` | off | Load no env file at all, not even `.env`. |
 | `--dir <path>` | the managed cache | Use this preview-host directory instead of the version-keyed cache. The copy becomes unmanaged — devkit upgrades will not touch it. Applies to `preview` and `init-preview`. |
 | `--force` | off | Re-copy the host even when the target looks complete, and reinstall its dependencies. Refused while a preview is running, since reinstalling would pull `node_modules` out from under it. Applies to `preview` and `init-preview`. |
 | `--parallel` | off | Run a second preview alongside one already running out of the same host directory. Without it, `preview` refuses and names the one it found. Applies to `preview`. |
@@ -116,25 +114,12 @@ Throw away the interactive session state and start from the committed seeds agai
 npx integrations-devkit reset
 ```
 
-Load a different env file for the seeds' `${VAR}` references — or none at all:
+The devkit reads no env file. A credential with a secret is created in the preview's
+Credentials dialog and confirmed with **Connect**; see [Seeds & Persistence](seeds.md).
 
-```bash
-npx integrations-devkit preview --env .env.staging
-npx integrations-devkit preview --no-env
-```
-
-A `.env` in the package root is loaded automatically when present, and `--env` **replaces**
-it: exactly one env file is ever read. Repeat the flag and the last one wins. A shell
-variable beats the file either way, since `process.loadEnvFile` never overwrites what is
-already set.
-
-The value is a **path**, not an environment name — `--env .env.staging`, not `--env
-staging`. If you pass a bare name and the matching `.env.<name>` exists, the error says so.
-
-> The flag is `--env`, **not** `--env-file`. Node reserves `--env-file` and
-> `--env-file-if-exists` and acts on them wherever they appear — even after the script
-> path — so `--env-file missing.env` fails inside Node (exit code 9) before the devkit
-> starts. Passing one is not an error, but the devkit will point you at `--env`.
+Both `run` and `preview` set `RVNXX_SSRF_ALLOW_PRIVATE=1` unless it is already set, as the
+local stack does, so a node can reach a service on `localhost`. The console says so once.
+The devkit never ships in a bundle, so this cannot reach a customer.
 
 ## Keeping the mock in step with the real API
 

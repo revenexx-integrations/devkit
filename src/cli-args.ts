@@ -100,14 +100,9 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv = process.env):
       case '--open':
         opts.open = true;
         break;
-      // Both are consumed by loadEnvFile() before parsing; listed here so they
-      // do not fall through to the unknown-option branch. A repeated `--env`
-      // resolves to the last one, so each occurrence skips its own value.
       case '--env':
-        i++;
-        break;
       case '--no-env':
-        break;
+        throw new CliError(`${arg} is gone: the devkit loads no env file. Create the credential in the preview's Credentials dialog and press Connect.`);
       case '--version':
       case '-v':
         command = 'version';
@@ -115,7 +110,6 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv = process.env):
       default:
         // Node acts on `--env-file[-if-exists]` itself but still forwards it
         // here, so accept and skip it rather than rejecting the user's input.
-        // loadEnvFile() has already pointed them at `--env`.
         if (arg?.startsWith('--env-file')) {
           if (!arg.includes('=')) {
             i++;

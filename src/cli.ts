@@ -24,8 +24,10 @@
  *   --ui <dir>       static UI build dir to serve (default: resolve the UI package)
  *   --no-ui          run API-only, do not serve a UI
  *   --open           open the preview in a browser
- *   --env <path>     env file to load *instead of* .env (default: .env when present)
- *   --no-env         do not load any env file
+ *
+ * A credential is created in the preview's Credentials dialog, the way a
+ * customer creates one; there is no env file. The mock and the preview set
+ * RVNXX_SSRF_ALLOW_PRIVATE so a node can reach a service on localhost.
  */
 
 import { existsSync, readdirSync, readFileSync, watch } from 'node:fs';
@@ -35,13 +37,13 @@ import { createRequire } from 'node:module';
 import { basename, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type CliOptions, parseArgs } from './cli-args.js';
-import { loadEnvFile } from './env.js';
 import { CliError } from './errors.js';
 import { DEVKIT_VERSION } from './index.js';
 import { isReloadableSource, type LoadedPackage, loadPackageFromEntry } from './loader.js';
 import { applySeeds, loadSeedsFromDir, loadState, saveState } from './persistence.js';
 import { previewChildEnv } from './preview/child-env.js';
 import { clearHostInstallMarker, hostBuildDir, hostDotenvName, hostNeedsInstall, hostViteCacheDir, markHostInstalled, materializeHost, resolveHostDir, withInstallLock } from './preview/host.js';
+import { allowPrivateTargets } from './ssrf.js';
 import { describePreview, previewConflict, readLivePreviews, registerPreview, unregisterPreview } from './preview/registry.js';
 import { findFreePort, listenWithFallback } from './ports.js';
 import { createRequestListener } from './server.js';
@@ -387,16 +389,10 @@ async function openBrowser(url: string): Promise<void> {
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  // Before parseArgs: it reads `PORT`, and seeds interpolate `${VAR}` from the
-  // environment once the mock starts.
-  const envFile = loadEnvFile(argv);
   const { command, options } = parseArgs(argv);
   if (command === 'version') {
     console.log(DEVKIT_VERSION);
     return;
-  }
-  if (envFile) {
-    console.log(`Loaded env from ${envFile}`);
   }
   if (command === 'reset') {
     const { rmSync } = await import('node:fs');
@@ -423,6 +419,12 @@ async function main(): Promise<void> {
     console.log(`Run it with: \`cd ${dir} && npm install && npm run dev\` (plus \`integrations-devkit --no-ui\` for the mock),`);
     console.log(`or \`integrations-devkit preview --dir ${dir}\` to have both started for you.`);
     return;
+  }
+  // The nodes run in this process, against whatever the developer points a
+  // credential at — usually a service on localhost. The devkit never ships in a
+  // bundle, so relaxing the SDK's SSRF guard here cannot reach a customer.
+  if (allowPrivateTargets(process.env)) {
+    console.log('RVNXX_SSRF_ALLOW_PRIVATE=1: nodes may reach localhost and private addresses, as in the local stack.');
   }
   if (command === 'preview') {
     await preview(options);

@@ -20,8 +20,7 @@ describe('port', () => {
   });
 
   /**
-   * `$PORT` counts as explicit: someone who exports it means it, and a `.env`
-   * carrying it is loaded before parsing precisely so it takes effect.
+   * `$PORT` counts as explicit: someone who exports it means it.
    */
   it('takes $PORT as an explicit choice', () => {
     const { options } = parse([], { PORT: '4000' });
@@ -79,14 +78,9 @@ describe('commands and passthrough flags', () => {
     expect(() => parse(['--nope'])).toThrow(/Unknown option: --nope/);
   });
 
-  /**
-   * `--env` is consumed by loadEnvFile before parsing; it must not be mistaken for
-   * an unknown option, and its value must not be read as a command.
-   */
-  it('skips --env and its value', () => {
-    const { command, options } = parse(['--env', '.env.staging', 'preview']);
-    expect(command).toBe('preview');
-    expect(options.port).toBe(DEFAULT_PORT);
+  /** The devkit reads no env file; the error says where the credential comes from instead. */
+  it.each(['--env', '--no-env'])('rejects %s and points at the Credentials dialog', flag => {
+    expect(() => parse([flag, 'preview'])).toThrow(/Credentials dialog/);
   });
 
   /** Node acts on `--env-file` itself but still forwards it here. */

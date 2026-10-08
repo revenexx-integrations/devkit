@@ -11,21 +11,20 @@ The seeds are the source of truth; the overlay is disposable.
 ## Committed seeds
 
 Put a `dev/seeds/index.ts` in your node package and default-export a `DevSeeds` object.
-Reference sensitive values with `${ENV_VAR}` — they are resolved from the environment at
-load time, so only the reference is committed, never the value:
+Seeds hold **fixed values only** — a credential for a local container, a workflow to start
+from. They are applied as written; the devkit reads no env file.
 
 ```ts
 // dev/seeds/index.ts
 import type { DevSeeds } from '@revenexx/integrations-node-devkit';
 
 const seeds: DevSeeds = {
-  secrets: [{ key: 'api-key', value: '${MY_API_KEY}' }],
   credentials: [
     {
       id: 'smtp-dev', // stable id, so workflows can reference it
       credentialTypeSlug: 'revenexx:smtp',
       name: 'Local SMTP',
-      config: { host: 'localhost', port: 1025, password: '${SMTP_PW}' },
+      config: { host: 'localhost', port: 1025, user: 'dev', password: 'dev' },
     },
   ],
 };
@@ -33,51 +32,18 @@ const seeds: DevSeeds = {
 export default seeds;
 ```
 
-`DevSeeds` also accepts `workflows`. Give every seeded entity a **stable `id`** so that
-references between them survive a reset.
+`DevSeeds` also accepts `secrets` and `workflows`. Give every seeded entity a **stable
+`id`** so that references between them survive a reset.
 
-Point at a different directory with `--seed <dir>`.
+Point at a different directory with `--seed <dir>`. A package without `dev/seeds/` starts
+with no seeds.
 
-## Where `${ENV_VAR}` values come from
+## A credential with a secret
 
-A `.env` in the package root is loaded automatically before the seeds are applied
-(Node >= 20.12). Values already present in the environment are **not** overwritten, so
-the shell always wins over the file:
-
-```bash
-# .env supplies the rest, this one call overrides MY_API_KEY
-MY_API_KEY=other npm run preview
-```
-
-`--env <path>` loads that file **instead of** `.env` — exactly one env file is ever read,
-so the named file is the whole picture rather than a patch on top of the default:
-
-```bash
-# .env is not read at all here
-npx integrations-devkit preview --env .env.staging
-```
-
-Pass it more than once and the last one wins, as with the CLI's other options. `--no-env`
-loads nothing at all. A missing `.env` is fine; a missing file you named explicitly is an
-error — there is no silent fallback to `.env` — so a typo does not turn into a confusing
-seed failure later. (It is `--env`, not `--env-file` — that one belongs to Node itself; see
-the [CLI Reference](cli.md).)
-
-> **A referenced variable that is not set anywhere is an error** — `interpolateEnv`
-> throws rather than seeding an empty value, since a silently blank credential is worse
-> than a clear failure. So `${VAR}` suits secrets your whole team has a value for. For a
-> credential only some developers can fill — a personal API key, say — attach it
-> conditionally instead, because seeds are ordinary TypeScript:
->
-> ```ts
-> const apiKey = process.env.MY_API_KEY;
->
-> const seeds: DevSeeds = {
->   credentials: [
->     ...(apiKey ? [{ id: 'api-dev', credentialTypeSlug: 'x:api', name: 'API', config: { apiKey } }] : []),
->   ],
-> };
-> ```
+A credential that needs a key, a token or a password is **not** seeded. Create it in the
+preview's Credentials dialog and press **Connect**, the way a customer does. That tries
+the credential's form and its `test()` along the way, which a seed skips. What you create
+is kept in the session overlay below, so it survives a restart.
 
 ## The session overlay
 

@@ -6,7 +6,7 @@ import { type DevStore, type DevStoreSnapshot, STORE_SCHEMA_VERSION } from './st
 /**
  * Layered persistence for the preview session:
  *   1. committed seeds (this module's {@link applySeeds}) — the durable base,
- *      with `${ENV_VAR}` references interpolated from the environment;
+ *      fixed values only: a credential with a secret is created in the UI;
  *   2. `.revenexx-dev/state.json` overlay ({@link loadState}/{@link saveState}) —
  *      interactive session state, versioned and disposable.
  */
@@ -46,44 +46,14 @@ export interface DevSeeds {
   workflows?: WorkflowSeed[];
 }
 
-const ENV_REF = /\$\{([A-Z0-9_]+)\}/g;
-
-/**
- * Recursively replaces `${ENV_VAR}` references in string values from `env`.
- * Throws a clear error when a referenced variable is unset so a developer
- * knows to add it to their `.env` — keeping secrets out of committed seeds.
- */
-export function interpolateEnv<T>(value: T, env: NodeJS.ProcessEnv = process.env): T {
-  if (typeof value === 'string') {
-    return value.replace(ENV_REF, (_match, name: string) => {
-      const resolved = env[name];
-      if (resolved === undefined) {
-        throw new Error(`Seed references \${${name}} but that environment variable is not set (add it to your .env).`);
-      }
-      return resolved;
-    }) as unknown as T;
-  }
-  if (Array.isArray(value)) {
-    return value.map(item => interpolateEnv(item, env)) as unknown as T;
-  }
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value)) {
-      out[key] = interpolateEnv(val, env);
-    }
-    return out as T;
-  }
-  return value;
-}
-
-/** Applies committed seeds to the store (env-interpolated). */
-export function applySeeds(store: DevStore, seeds: DevSeeds, env: NodeJS.ProcessEnv = process.env): void {
+/** Applies committed seeds to the store, as written. */
+export function applySeeds(store: DevStore, seeds: DevSeeds): void {
   for (const secret of seeds.secrets ?? []) {
-    const { key, value } = interpolateEnv(secret, env);
+    const { key, value } = secret;
     store.setSecret(key, value);
   }
   for (const credential of seeds.credentials ?? []) {
-    const resolved = interpolateEnv(credential, env);
+    const resolved = credential;
     store.createCredential({
       credentialTypeSlug: resolved.credentialTypeSlug,
       name: resolved.name,
@@ -94,7 +64,7 @@ export function applySeeds(store: DevStore, seeds: DevSeeds, env: NodeJS.Process
     });
   }
   for (const workflow of seeds.workflows ?? []) {
-    const resolved = interpolateEnv(workflow, env);
+    const resolved = workflow;
     store.createWorkflow({
       name: resolved.name,
       blob: resolved.blob ?? resolved.definition ?? {},

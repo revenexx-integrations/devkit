@@ -16,14 +16,6 @@ import { readFileSync } from 'node:fs';
 const manifestUrl = new URL('../package.json', import.meta.url);
 export const DEVKIT_VERSION: string = JSON.parse(readFileSync(manifestUrl, 'utf8')).version;
 
-export {
-  ENV_FILE_MIN_NODE,
-  type EnvFileChoice,
-  loadEnvFile,
-  type LoadEnvFileOptions,
-  nodeOwnedEnvFlag,
-  resolveEnvFile,
-} from './env.js';
 export { DevApiError } from './errors.js';
 export {
   ensureTsxRegistered,
@@ -36,7 +28,6 @@ export {
   applySeeds,
   type CredentialSeed,
   type DevSeeds,
-  interpolateEnv,
   loadSeedsFromDir,
   loadState,
   saveState,

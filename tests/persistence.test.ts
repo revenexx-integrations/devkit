@@ -2,34 +2,25 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { applySeeds, DevStore, interpolateEnv, loadState, saveState } from '../src/index.js';
-
-describe('interpolateEnv', () => {
-  it('replaces ${VAR} references from the provided env', () => {
-    const out = interpolateEnv({ a: 'x-${TOKEN}', nested: ['${TOKEN}'] }, { TOKEN: 'secret' });
-    expect(out).toEqual({ a: 'x-secret', nested: ['secret'] });
-  });
-
-  it('throws for an unset referenced variable', () => {
-    expect(() => interpolateEnv('${MISSING}', {})).toThrow(/MISSING/);
-  });
-});
+import { applySeeds, DevStore, loadState, saveState } from '../src/index.js';
 
 describe('applySeeds', () => {
-  it('seeds credentials and secrets with env interpolation and stable ids', () => {
+  it('seeds credentials and secrets as written, with stable ids', () => {
     const store = new DevStore();
-    applySeeds(
-      store,
-      {
-        secrets: [{ key: 'api-key', value: '${API_KEY}' }],
-        credentials: [{ id: 'cred-1', credentialTypeSlug: 'x:basic', name: 'Basic', config: { host: 'h', password: '${PW}' } }],
-      },
-      { API_KEY: 'k', PW: 'p' },
-    );
+    applySeeds(store, {
+      secrets: [{ key: 'api-key', value: 'k' }],
+      credentials: [{ id: 'cred-1', credentialTypeSlug: 'x:basic', name: 'Basic', config: { host: 'h', password: 'p' } }],
+    });
 
     expect(store.getSecret('api-key')?.value).toBe('k');
     const cred = store.getCredential('cred-1');
     expect(cred?.config).toEqual({ host: 'h', password: 'p' });
+  });
+
+  it('takes a ${VAR} literally, since no env file is read', () => {
+    const store = new DevStore();
+    applySeeds(store, { secrets: [{ key: 'api-key', value: '${API_KEY}' }] });
+    expect(store.getSecret('api-key')?.value).toBe('${API_KEY}');
   });
 });
 

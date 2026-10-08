@@ -137,23 +137,22 @@ Pass `--ui <dir>` to `integrations-devkit` if you instead have a prebuilt static
 
 Three layers, base to top:
 
-1. **Committed seeds** in `dev/seeds/` — stable instances checked into the repo.
-   Reference sensitive values via `${ENV_VAR}` (resolved from the environment,
-   with a `.env` in the package root loaded automatically; only the reference is
-   committed, never the value):
+1. **Committed seeds** in `dev/seeds/` — stable instances checked into the repo,
+   fixed values only (a credential for a local container, say). A credential with
+   a secret is not seeded: create it in the preview's Credentials dialog and press
+   **Connect**, the way a customer does. The devkit reads no env file.
 
    ```ts
    // dev/seeds/index.ts
    import type { DevSeeds } from '@revenexx/integrations-node-devkit';
 
    const seeds: DevSeeds = {
-     secrets: [{ key: 'api-key', value: '${MY_API_KEY}' }],
      credentials: [
        {
          id: 'smtp-dev', // stable id so workflows can reference it
          credentialTypeSlug: 'revenexx:smtp',
          name: 'Local SMTP',
-         config: { host: 'localhost', port: 1025, password: '${SMTP_PW}' },
+         config: { host: 'localhost', port: 1025, user: 'dev', password: 'dev' },
        },
      ],
    };
