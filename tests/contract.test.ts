@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { API_VERSION } from '../src/http.js';
