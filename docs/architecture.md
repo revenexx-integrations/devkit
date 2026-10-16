@@ -46,7 +46,11 @@ Two node endpoints do the interesting work:
   the manifest's field rules and returns per-field errors.
 
 OAuth is mocked end to end: `POST /credentials/{id}/oauth/authorize-url` builds the
-authorize URL, and `/credentials/oauth/callback` exchanges the code.
+authorize URL, and `/credentials/oauth/callback` exchanges the code. Both hand your
+credential the redirect URI `http://<host>:<port>/api/v1/credentials/oauth/callback`,
+built from the address the request came in on — with `--port 3555` that is
+`http://localhost:3555/api/v1/credentials/oauth/callback`, which is what you register
+with the provider.
 
 ## The preview host
 
@@ -192,3 +196,11 @@ Two limits worth knowing:
   `DEVKIT_ONLY` is hand-maintained.
 - The snapshot only moves when someone runs `npm run refresh-contract`. That is a manual
   step — but a visible one, unlike the invisible drift it replaced.
+- The contract declares shapes, not **order**. `GET /nodes` is a JSON array either way, so
+  no test here notices that the studio's catalogue reads "a newer version of this node
+  exists" as position in it (`newerExecutableVersions`, from studio-integrations 1.3.0) —
+  an assumption the mock satisfies by sorting each slug's versions semver-descending, and
+  which `tests/server.test.ts` pins from this side only. The same blind spot covers
+  `latest`: nothing in the contract says `GET /nodes/{slug}/latest` has to name the
+  version `…/config:resolve` and `…/execute:test` run under that URL, so the mock routes
+  every `latest` through one ordering and `tests/server.test.ts` asserts the two agree.

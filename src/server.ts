@@ -9,6 +9,7 @@ import {
   executeNodeTest,
   findCredential,
   findCredentialType,
+  listNodesNewestFirst,
   nodeVersions,
   resolveNodeConfig,
   testCredentialConfig,
@@ -38,6 +39,27 @@ export function createDevServer(deps: DevServerDeps): http.Server {
   return http.createServer(createRequestListener(deps));
 }
 
+/**
+ * The origin the client used to reach us, taken from the `Host` header.
+ *
+ * `req.url` carries only the path, so a fixed base would drop the port and the
+ * OAuth redirect URI would point at port 80 — the provider then sends the user
+ * somewhere the dev server is not listening. The header is attacker-controlled
+ * in general; here it only ever shapes a URL handed back to the same caller on
+ * a dev-only server, and a malformed one falls back rather than throwing.
+ */
+function requestOrigin(req: http.IncomingMessage): string {
+  const host = req.headers.host;
+  if (!host) {
+    return 'http://localhost';
+  }
+  try {
+    return new URL(`http://${host}`).origin;
+  } catch {
+    return 'http://localhost';
+  }
+}
+
 async function handle(req: http.IncomingMessage, res: http.ServerResponse, deps: DevServerDeps): Promise<void> {
   const method = (req.method ?? 'GET').toUpperCase();
   if (method === 'OPTIONS') {
@@ -45,7 +67,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, deps:
     return;
   }
 
-  const url = new URL(req.url ?? '/', 'http://localhost');
+  const url = new URL(req.url ?? '/', requestOrigin(req));
   let pathname = url.pathname;
   if (pathname.startsWith('/api/v1')) {
     pathname = pathname.slice('/api/v1'.length);
@@ -142,8 +164,12 @@ function handleSchemas(res: http.ServerResponse, deps: DevServerDeps, seg: strin
 
 async function handleNodes(req: http.IncomingMessage, res: http.ServerResponse, method: string, loaded: LoadedPackage, store: DevStore, seg: string[]): Promise<void> {
   // GET /nodes
+  //
+  // Newest version first per slug — the order the registry answers in, and the
+  // one the studio's catalogue reads "a newer version exists" out of. See
+  // `listNodesNewestFirst`.
   if (seg.length === 1 && method === 'GET') {
-    return void sendJson(res, 200, { data: loaded.manifest.nodes.map(n => nodeToApi(n, nodeApiContext(loaded))) });
+    return void sendJson(res, 200, { data: listNodesNewestFirst(loaded.manifest.nodes).map(n => nodeToApi(n, nodeApiContext(loaded))) });
   }
   const slug = seg[1];
   if (!slug) {
@@ -237,9 +263,17 @@ function nodeApiContext(loaded: LoadedPackage) {
 /**
  * Resolves a node's MANIFEST entry (what `GET /nodes` projects), or throws 404.
  * Distinct from resolve.ts's `findNode`, which returns the live INode instance.
+ *
+ * `latest` goes through `listNodesNewestFirst`, the same ordering `GET /nodes`
+ * is built from, rather than taking the first export of the slug. `findNode`
+ * sorts, so export order here would have `GET /nodes/{slug}/latest` DESCRIBE one
+ * version while `config:resolve`, `config:validate` and `execute:test` ran
+ * another under the same URL — for a package exporting 1.0.0 before 2.0.0, the
+ * ordinary way round to write them.
  */
 function findManifestNode(loaded: LoadedPackage, slug: string, version: string) {
-  const node = loaded.manifest.nodes.find(n => n.slug === slug && (version === 'latest' || n.version === version));
+  const matches = loaded.manifest.nodes.filter(n => n.slug === slug);
+  const node = version === 'latest' ? listNodesNewestFirst(matches)[0] : matches.find(n => n.version === version);
   if (!node) {
     throw new DevApiError(404, `Node '${slug}@${version}' not found.`);
   }
@@ -339,7 +373,7 @@ async function handleCredentials(req: http.IncomingMessage, res: http.ServerResp
 
   // POST /credentials/{id}/oauth/authorize-url
   if (seg[2] === 'oauth' && seg[3] === 'authorize-url' && method === 'POST') {
-    const redirectUri = 'http://localhost/api/v1/credentials/oauth/callback';
+    const redirectUri = `${url.origin}/api/v1/credentials/oauth/callback`;
     // Dev flow: carry the credential id in `state` so the callback can find it.
     const result = await buildOAuthAuthorizeUrl(loaded, store, id, { redirectUri, state: id });
     return void sendJson(res, 200, { authorize_url: result.authorizeUrl });

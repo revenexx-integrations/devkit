@@ -60,8 +60,10 @@
           ref="inspector"
           :selection="selection"
           :secret-keys="secretKeys"
+          :state-namespaces="stateNamespaces"
           :refused-fields="refused"
           @update="onSubmit"
+          @declare-state="onDeclareState"
           @close="requestClose"
         />
       </DialogContent>
@@ -92,6 +94,33 @@ const { load, resolveLocalized } = useIntegrationsNodes()
 const nodes = ref<ApiNode[]>([])
 const loading = ref(true)
 const loadError = ref<string | null>(null)
+
+type StateRole = 'mapping' | 'cursor' | 'dedupe' | 'digest'
+type StateVisibility = 'private' | 'shared'
+interface DeclaredNamespace { namespace: string, role: StateRole, visibility?: StateVisibility }
+
+/**
+ * The state namespaces a `state-ref` setting may pick from (PO-374).
+ *
+ * In the product these live in the workflow blob's `state` block and the editor
+ * owns them — which is why the inspector only ANNOUNCES a declaration made from
+ * inside the picker (`declare-state`) instead of keeping it. There is no
+ * workflow here, so this page is the owner: the list starts empty, and grows by
+ * exactly the declarations a Save keeps.
+ *
+ * Holding them matters even though nothing is persisted. The inspector stages a
+ * declaration in its own draft until Save, then hands it over and forgets it —
+ * so without an owner the namespace an author just declared would vanish from
+ * the picker the moment they saved, and again on every reopen. It lives for the
+ * session; a reload starts over, as nothing on this page is written anywhere.
+ */
+const stateNamespaces = ref<DeclaredNamespace[]>([])
+
+/** Save kept a namespace declared inside a picker. Ignore a name already held. */
+function onDeclareState(namespace: string, role: StateRole, visibility: StateVisibility) {
+  if (stateNamespaces.value.some(n => n.namespace === namespace)) return
+  stateNamespaces.value = [...stateNamespaces.value, { namespace, role, visibility }]
+}
 
 const selection = ref<any>(null)
 const secretKeys = ref<string[]>([])

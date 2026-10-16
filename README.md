@@ -87,6 +87,26 @@ next version bump. To change the host, take a copy that is yours:
 > `POST`s to `/nodes/{slug}/{version}/config:resolve`, which the mock serves).
 > The **Workflows** surface is hidden until phase 2, because workflow execution is
 > not mocked; the Temporal parts (run history, `…/runs/*`) are intentionally absent.
+>
+> Three things a node declares are drawn by the inspector as the product draws
+> them, as of `@revenexx/studio-integrations` 1.3.0: a `showIf` condition hides
+> the setting it is written on until it holds (and the mock's `config:validate`
+> skips that setting too, so the two agree), a `state-ref` setting is a picker
+> rather than a raw JSON box, and a node exported in more than one version can be
+> moved between them from inside the dialog. What each move costs is listed
+> before it happens.
+>
+> From 1.4.0 the Parameters tab draws a node's settings in the order the node
+> declares them, rather than every required one first: four or fewer are all
+> shown, and past the fourth a setting stands when it is required and folds away
+> when it is not. The lever is the manifest — a setting that is central to a node
+> belongs near the top of its `config`, whether or not it is required. A setting
+> inside a repeating row is drawn as what it declares too (its options, its
+> default, its description, its `showIf` resolved against **that** row) instead
+> of as an empty text box, and a new row starts from the declared defaults rather
+> than from an empty string under every key. An option declared with an empty
+> value — "unchanged", "all kinds" — is selectable rather than fatal to the
+> dialog.
 
 The mock is checked against the service's own OpenAPI contract — see
 [docs/architecture.md](docs/architecture.md#staying-in-step-with-the-real-api).
@@ -169,6 +189,22 @@ import {
 const ctx = createMockContext({ credentials: { 'smtp-1': { host: 'mail' } } });
 const res = await node.execute(ctx, { credentials: 'smtp-1' });
 
+// state (PO-374): seed what earlier runs left behind, then assert both branches
+const syncCtx = createMockContext({
+  state: {
+    mappings: { article: { 'pim:12345': 'erp:A-8891' } },
+    cursors: { 'crm.customers': { '': { updatedAfter: '2026-08-01T00:00:00Z' } } },
+  },
+});
+await node.execute(syncCtx, { id: '12345' });
+expect(syncCtx.state.mapping.put).not.toHaveBeenCalled(); // it was already known
+
+// a cursor and a digest are staged: the run that sets one does not read it back.
+// completeRun() is the run's ending — leave it out to play the run that failed
+await node.execute(syncCtx, { since: 'cursor' });
+syncCtx.completeRun();
+await node.execute(syncCtx, { since: 'cursor' }); // reads what the first run staged
+
 // author-time resolver
 const authorCtx = createAuthorContext({ category: 'fruits' });
 const options = await node.loadOptions(authorCtx, 'item');
@@ -201,3 +237,41 @@ This is a faithful **dev** stand-in, not the production service:
   client-side schema validation is inactive.
 - `POST /nodes/{slug}/{version}/config:validate` exists only here, not in the real
   API.
+- **`config:validate` reads a node's settings one level deep.** A setting
+  declared inside a repeating row or an object (`items` / `properties`) is
+  checked for being an array or an object and no further: its sub-settings are
+  not demanded when required, not type-checked, and their own `showIf` is not
+  resolved per row. The inspector draws all three from `studio-integrations`
+  1.4.0 on, so on nested settings the preview is now ahead of the validator —
+  the mirror image of the gap 1.3.0 closed.
+- **The state store (PO-374) is writable here, and read-only in production.** In
+  the real product an author-time test run may read `ctx.state` but not write to
+  it: a correlation created by a test click is indistinguishable from one a
+  production run made, and the next real run would trust it. Locally there is no
+  such stake — the store is a disposable overlay in `.revenexx-dev/` — and
+  refusing writes would make it impossible to exercise the very nodes the state
+  store exists for. So a node that correlates ids behaves on its second preview
+  call like a second run, which it would not do against the real API.
+
+  What the store *does* enforce is kept: a mapping and a claim take effect at
+  once while a cursor and a digest are staged and adopted only when the run
+  completes (a preview call that fails leaves them where they were), re-pointing
+  either side of an existing correlation is refused, and a `ttlSeconds` outside
+  1…31536000 is refused rather than clamped. A node that passes here should not
+  meet the store's rules for the first time in production.
+- **No namespace declaration and no role enforcement.** Any namespace name
+  works, where the real engine refuses one the workflow did not declare —
+  including the per-node half, where only the namespaces a node's own
+  `state-ref` settings name are reachable. Nothing local can enforce that: the
+  declarations live in a workflow's blob, and the preview has no workflow.
+- **A `state-ref` picker offers what you declared in it, and only for this
+  session.** The picker is real from `studio-integrations` 1.3.0 on — the
+  namespaces of the field's `stateRole`, and the offer to declare a new one — but
+  in the product its list comes from the workflow being edited. The preview's
+  node page owns that list instead: it starts empty, a declaration kept by Save
+  joins it, and a browser reload starts over. Nothing is written to the blob,
+  because there is none, and the mock does not check a namespace against it
+  either — see the bullet above.
+- The state entries are not exposed over the mock API, so the Cockpit's State
+  view — and the editor's own State dialog, which edits a workflow's `state`
+  block — is inactive in the preview.

@@ -26,6 +26,23 @@ class RulesNode implements INode {
         ],
       },
       { key: 'token', label: 'Token', type: 'string' as const, required: true, expressionAllowed: true },
+      {
+        key: 'source',
+        label: 'Source',
+        type: 'select' as const,
+        options: [
+          { value: 'field', label: 'Field' },
+          { value: 'now', label: 'Now' },
+        ],
+      },
+      {
+        key: 'path',
+        label: 'Path to the date',
+        type: 'string' as const,
+        required: true,
+        showIf: { key: 'source', op: 'equals' as const, value: 'field' },
+      },
+      { key: 'namespace', label: 'Namespace', type: 'state-ref' as const, stateRole: 'mapping' as const },
       { key: 'params', label: 'Params', type: 'dynamic-schema' as const, dependsOn: ['host'] },
     ],
   };
@@ -39,7 +56,53 @@ class RulesNode implements INode {
   }
 }
 
-const loaded = resolveExports({ NODES: [new RulesNode()] });
+/**
+ * A node whose whole dynamic-schema group hangs off one choice — the case where
+ * the parent carries the `showIf`, not the children. `resolveCalls` records
+ * whether the resolver ran at all: for a group nobody is looking at, it should
+ * not, because that is a real author-time resolve that may go to the network.
+ */
+class HiddenGroupNode implements INode {
+  resolveCalls = 0;
+
+  description = {
+    slug: 'devkit:hidden-group',
+    version: '1.0.0',
+    category: 'action' as const,
+    name: 'Hidden group',
+    inputs: {},
+    outputs: [],
+    config: [
+      {
+        key: 'mode',
+        label: 'Mode',
+        type: 'select' as const,
+        options: [
+          { value: 'simple', label: 'Simple' },
+          { value: 'advanced', label: 'Advanced' },
+        ],
+      },
+      {
+        key: 'params',
+        label: 'Params',
+        type: 'dynamic-schema' as const,
+        showIf: { key: 'mode', op: 'equals' as const, value: 'advanced' },
+      },
+    ],
+  };
+
+  async execute(_ctx: INodeContext, _inputs: Record<string, unknown>): Promise<INodeResult> {
+    return { outputs: {} };
+  }
+
+  async resolveConfigSchema(_ctx: INodeAuthorContext): Promise<IConfigField[]> {
+    this.resolveCalls += 1;
+    return [{ key: 'entity_id', label: 'Entity Id', type: 'string', required: true }];
+  }
+}
+
+const hiddenGroup = new HiddenGroupNode();
+const loaded = resolveExports({ NODES: [new RulesNode(), hiddenGroup] });
 const store = new DevStore();
 const server = createDevServer({ getPackage: () => loaded, store });
 
@@ -54,13 +117,17 @@ afterAll(async () => {
   await new Promise<void>(resolve => server.close(() => resolve()));
 });
 
-async function validate(config: Record<string, unknown>) {
-  const res = await fetch(`${base}/nodes/devkit:rules/1.0.0/config:validate`, {
+async function validateSlug(slug: string, config: Record<string, unknown>) {
+  const res = await fetch(`${base}/nodes/${slug}/1.0.0/config:validate`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ config }),
   });
   return { status: res.status, body: (await res.json()) as { valid: boolean; errors: Record<string, string[]> } };
+}
+
+async function validate(config: Record<string, unknown>) {
+  return validateSlug('devkit:rules', config);
 }
 
 describe('config:validate', () => {
@@ -91,5 +158,58 @@ describe('config:validate', () => {
   it('passes a fully valid payload', async () => {
     const { body } = await validate({ host: 'db.local', token: 'secret', entity_id: 'e-1', port: 5432, code: 'ABC', mode: 'a' });
     expect(body).toEqual({ valid: true, errors: {} });
+  });
+
+  /**
+   * `showIf` (SDK 1.0.0, PO-410): the editor does not draw a setting whose
+   * condition does not hold, so demanding it here would put an error against a
+   * field the author cannot see.
+   */
+  it('does not demand a required field whose showIf does not hold', async () => {
+    const base = { host: 'h', token: 't', entity_id: 'e' };
+
+    expect((await validate({ ...base, source: 'now' })).body).toEqual({ valid: true, errors: {} });
+
+    const conditioned = await validate({ ...base, source: 'field' });
+    expect(conditioned.body.valid).toBe(false);
+    expect(conditioned.body.errors.path).toBeDefined();
+
+    expect((await validate({ ...base, source: 'field', path: 'updated_at' })).body).toEqual({ valid: true, errors: {} });
+  });
+
+  it('leaves a stale value under a field that does not apply alone', async () => {
+    // `path` holds a leftover from a choice the author has since changed away
+    // from; it is not drawn, so it is not checked either.
+    const { body } = await validate({ host: 'h', token: 't', entity_id: 'e', source: 'now', path: 42 });
+    expect(body).toEqual({ valid: true, errors: {} });
+  });
+
+  /**
+   * `showIf` sits on `IConfigFieldBase`, so a `dynamic-schema` marker can carry
+   * one too — and then the group it stands for is not on screen at all.
+   */
+  it('neither resolves nor demands the children of a dynamic-schema that does not apply', async () => {
+    const before = hiddenGroup.resolveCalls;
+
+    const hidden = await validateSlug('devkit:hidden-group', { mode: 'simple' });
+    expect(hidden.body).toEqual({ valid: true, errors: {} });
+    expect(hiddenGroup.resolveCalls).toBe(before);
+
+    const shown = await validateSlug('devkit:hidden-group', { mode: 'advanced' });
+    expect(shown.body.valid).toBe(false);
+    expect(shown.body.errors.entity_id).toBeDefined();
+    expect(hiddenGroup.resolveCalls).toBe(before + 1);
+
+    expect((await validateSlug('devkit:hidden-group', { mode: 'advanced', entity_id: 'e-1' })).body).toEqual({ valid: true, errors: {} });
+  });
+
+  it('checks a state-ref as the namespace name it carries', async () => {
+    const base = { host: 'h', token: 't', entity_id: 'e' };
+
+    expect((await validate({ ...base, namespace: 'article' })).body).toEqual({ valid: true, errors: {} });
+
+    const wrong = await validate({ ...base, namespace: 7 });
+    expect(wrong.body.valid).toBe(false);
+    expect(wrong.body.errors.namespace?.[0]).toMatch(/Expected a string/);
   });
 });

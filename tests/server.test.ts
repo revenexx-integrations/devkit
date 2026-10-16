@@ -1,8 +1,8 @@
 import type { AddressInfo } from 'node:net';
-import type { IOutputPort } from '@revenexx/integrations-node-sdk';
+import type { ICredentialContext, INode, IOutputPort } from '@revenexx/integrations-node-sdk';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDevServer, DevStore, resolveExports } from '../src/index.js';
-import { PlaygroundNode, StaticCredential, template } from './fixtures/package.js';
+import { OAuthCredential, PlaygroundNode, StaticCredential, template } from './fixtures/package.js';
 
 const loaded = resolveExports({
   NODES: [new PlaygroundNode()],
@@ -75,6 +75,87 @@ describe('execute:test (runs the real execute in-process)', () => {
     // inputs are merged OVER config, per the contract's wording.
     expect(body).toMatchObject({ outputs: { echoed: { category: 'orders', extra: 1 } }, branch: 'matched' });
     expect(body.logs).toEqual([{ level: 'info', message: 'executing playground', meta: { keys: ['category', 'extra'] } }]);
+  });
+
+  /**
+   * The whole point of the state store is the *second* run. A preview that
+   * forgot between calls could only ever show the create branch, which is the
+   * one an author does not need help with.
+   */
+  it('remembers what a node correlated, so the second call takes the update branch', async () => {
+    const first = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { correlate: 'pim:12345' },
+    });
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ branch: 'created', outputs: { known: null } });
+
+    const second = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { correlate: 'pim:12345' },
+    });
+    expect(second.status).toBe(200);
+    expect(second.body).toMatchObject({ branch: 'updated', outputs: { known: 'erp:pim:12345' } });
+  });
+
+  /**
+   * A cursor is staged, not written: the run that advances the watermark does
+   * not read it back, and a run that fails afterwards leaves it where it was.
+   * Getting this wrong locally is invisible until a production run fails and
+   * silently skips everything it never read.
+   */
+  it('adopts a staged cursor only once the run completes', async () => {
+    const first = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { advance: '2026-08-26T10:00:00Z' },
+    });
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ outputs: { from: null } });
+
+    const second = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { advance: '2026-08-27T10:00:00Z' },
+    });
+    expect(second.body).toMatchObject({ outputs: { from: { updatedAfter: '2026-08-26T10:00:00Z' } } });
+  });
+
+  it('drops what a failed run staged, so the next one reads the old watermark', async () => {
+    await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { advance: '2026-09-01T10:00:00Z' },
+    });
+
+    const failed = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { advance: '2026-09-02T10:00:00Z', thenBoom: true },
+    });
+    expect(failed.status).toBe(502);
+
+    const next = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { advance: '2026-09-03T10:00:00Z' },
+    });
+    expect(next.body).toMatchObject({ outputs: { from: { updatedAfter: '2026-09-01T10:00:00Z' } } });
+  });
+
+  /**
+   * The four roles share a namespace and a key without sharing a slot. A digest
+   * written for the entity that was just correlated must not become the answer
+   * `mapping.get` gives, or the next call takes the update branch on a partner
+   * id that was never a partner id.
+   */
+  it('keeps a correlation and a digest for the same key apart', async () => {
+    const first = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { correlate: 'pim:77', digestToo: true },
+    });
+    expect(first.body).toMatchObject({ branch: 'created' });
+
+    const second = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { correlate: 'pim:77' },
+    });
+    expect(second.body).toMatchObject({ branch: 'updated', outputs: { known: 'erp:pim:77' } });
+  });
+
+  it('keeps a different key on the create branch', async () => {
+    await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', { inputs: { correlate: 'pim:1' } });
+
+    const other = await send('POST', '/nodes/devkit:playground/1.0.0/execute:test', {
+      inputs: { correlate: 'pim:2' },
+    });
+    expect(other.body).toMatchObject({ branch: 'created' });
   });
 
   it('reports a throwing node as 502 with the logs it managed to emit', async () => {
@@ -208,5 +289,193 @@ describe('templates + workflows + schemas', () => {
    */
   it('404s an unknown version of a known schema domain', async () => {
     expect((await get('/schemas/node/v99-nope')).status).toBe(404);
+  });
+});
+
+/**
+ * `GET /nodes` is the listing the studio builds its node catalogue from, and
+ * since `@revenexx/studio-integrations` 1.3.0 that catalogue reads "a newer
+ * version of this node exists" as position in the array rather than by parsing a
+ * semver. Export order — the order a human writes the versions in, oldest first
+ * — would therefore have the inspector offer a DOWNGRADE as the upgrade.
+ */
+describe('node listing order', () => {
+  class Versioned implements Pick<INode, 'description'> {
+    constructor(
+      private readonly slug: string,
+      private readonly version: string,
+    ) {}
+    get description() {
+      return {
+        slug: this.slug,
+        version: this.version,
+        category: 'action' as const,
+        name: this.slug,
+        inputs: {},
+        outputs: [{ kind: 'branch' as const, dataType: 'any' as const }],
+        config: [],
+      };
+    }
+    async execute() {
+      return { outputs: {} };
+    }
+  }
+
+  const multi = resolveExports({
+    NODES: [
+      new Versioned('devkit:alpha', '1.0.0'),
+      new Versioned('devkit:alpha', '2.0.0'),
+      new Versioned('devkit:beta', '0.9.0'),
+      new Versioned('devkit:alpha', '1.10.0'),
+      new Versioned('devkit:gamma', '2.0.0-beta.1'),
+      new Versioned('devkit:gamma', '2.0.0'),
+      new Versioned('devkit:gamma', '2.0.0-rc.2'),
+    ] as unknown as INode[],
+  });
+  const multiServer = createDevServer({ getPackage: () => multi, store: new DevStore() });
+  let multiBase = '';
+
+  beforeAll(async () => {
+    await new Promise<void>(resolve => multiServer.listen(0, resolve));
+    multiBase = `http://127.0.0.1:${(multiServer.address() as AddressInfo).port}/api/v1`;
+  });
+  afterAll(async () => {
+    await new Promise<void>(resolve => multiServer.close(() => resolve()));
+  });
+
+  it('groups a slug together, newest version first, slugs in export order', async () => {
+    const res = await fetch(`${multiBase}/nodes`);
+    const body = (await res.json()) as { data: Array<{ slug: string; version: string }> };
+    expect(body.data.map(n => `${n.slug}@${n.version}`)).toEqual([
+      // 1.10.0 above 1.0.0 — a string compare would put it below.
+      'devkit:alpha@2.0.0',
+      'devkit:alpha@1.10.0',
+      'devkit:alpha@1.0.0',
+      'devkit:beta@0.9.0',
+      // A prerelease ranks below its own release, and `rc` above `beta`.
+      'devkit:gamma@2.0.0',
+      'devkit:gamma@2.0.0-rc.2',
+      'devkit:gamma@2.0.0-beta.1',
+    ]);
+  });
+
+  /**
+   * `2.0.0-beta.1` used to parse its patch as `parseInt('0-beta') === 0` and so
+   * compare EQUAL to `2.0.0`; `Array.prototype.sort` is stable, so the tie fell
+   * back to export order and a package exporting the prerelease first listed it
+   * on top. `newerExecutableVersions()` reads that as "the beta is newer than the
+   * stable" and offers an author pinned to 2.0.0 an upgrade to the beta.
+   */
+  it('ranks a prerelease below its own release on GET /nodes/{slug}/versions too', async () => {
+    const res = await fetch(`${multiBase}/nodes/devkit%3Agamma/versions`);
+    const body = (await res.json()) as { data: string[] };
+    expect(body.data).toEqual(['2.0.0', '2.0.0-rc.2', '2.0.0-beta.1']);
+  });
+
+  /**
+   * `latest` has to mean the same version everywhere it appears in a URL. The
+   * manifest read (`GET /nodes/{slug}/latest`, and `DELETE` on the same helper)
+   * resolved it as the FIRST export of the slug, while `config:resolve`,
+   * `config:validate` and `execute:test` all go through `findNode`, which sorts.
+   * Export order therefore had the mock DESCRIBE one version and EXECUTE another
+   * under a single URL.
+   */
+  it("resolves GET /nodes/{slug}/latest to the head of that slug's group", async () => {
+    const listed = await fetch(`${multiBase}/nodes`);
+    const listedBody = (await listed.json()) as { data: Array<{ slug: string; version: string }> };
+
+    for (const slug of ['devkit:alpha', 'devkit:beta', 'devkit:gamma']) {
+      const head = listedBody.data.find(n => n.slug === slug)!;
+      const res = await fetch(`${multiBase}/nodes/${encodeURIComponent(slug)}/latest`);
+      const body = (await res.json()) as { slug: string; version: string };
+      expect(body.version, slug).toBe(head.version);
+    }
+  });
+
+  /** The version `latest` DESCRIBES is the one it RESOLVES config against. */
+  it('describes and executes the same version under latest', async () => {
+    const described = await fetch(`${multiBase}/nodes/devkit%3Agamma/latest`);
+    const describedBody = (await described.json()) as { version: string };
+    const resolved = await fetch(`${multiBase}/nodes/devkit%3Agamma/${describedBody.version}`);
+    expect(resolved.status).toBe(200);
+    expect(describedBody.version).toBe('2.0.0');
+  });
+
+  it('lists the same versions as GET /nodes/{slug}/versions, in the same order', async () => {
+    const listed = await fetch(`${multiBase}/nodes`);
+    const listedBody = (await listed.json()) as { data: Array<{ slug: string; version: string }> };
+    const versions = await fetch(`${multiBase}/nodes/devkit%3Aalpha/versions`);
+    const versionsBody = (await versions.json()) as { data: string[] };
+    expect(listedBody.data.filter(n => n.slug === 'devkit:alpha').map(n => n.version)).toEqual(versionsBody.data);
+  });
+});
+
+/**
+ * The redirect URI the devkit hands to a credential has to be reachable, and the
+ * authorize call and the token exchange have to agree on it — an OAuth provider
+ * rejects the exchange when the two differ.
+ *
+ * This needs its own listener: the assertion is precisely that the value follows
+ * the address the request arrived on, which a fixed `base` could not show.
+ */
+describe('oauth redirect uri', () => {
+  /** Records what the server passed, which the fixture credential does not expose. */
+  class RecordingOAuthCredential extends OAuthCredential {
+    authorizeRedirectUri: string | null = null;
+    exchangeRedirectUri: string | null = null;
+
+    override async buildAuthorizeUrl(ctx: ICredentialContext, config: Record<string, unknown>, params: { redirectUri: string; state: string }) {
+      this.authorizeRedirectUri = params.redirectUri;
+      return super.buildAuthorizeUrl(ctx, config, params);
+    }
+
+    override async exchangeCode(ctx: ICredentialContext, config: Record<string, unknown>, params: { code: string; redirectUri: string; codeVerifier?: string }) {
+      this.exchangeRedirectUri = params.redirectUri;
+      return super.exchangeCode(ctx, config, params);
+    }
+  }
+
+  const credential = new RecordingOAuthCredential();
+  const oauth = resolveExports({ NODES: [], CREDENTIALS: [credential], TEMPLATES: [] });
+  const oauthServer = createDevServer({ getPackage: () => oauth, store: new DevStore() });
+  let oauthBase = '';
+  let oauthOrigin = '';
+
+  beforeAll(async () => {
+    await new Promise<void>(resolve => oauthServer.listen(0, resolve));
+    oauthOrigin = `http://127.0.0.1:${(oauthServer.address() as AddressInfo).port}`;
+    oauthBase = `${oauthOrigin}/api/v1`;
+  });
+  afterAll(async () => {
+    await new Promise<void>(resolve => oauthServer.close(() => resolve()));
+  });
+
+  async function createCredential(): Promise<string> {
+    const res = await fetch(`${oauthBase}/credentials`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ credential_type_slug: 'devkit:oauth', name: 'OAuth', config: { clientId: 'cid', clientSecret: 'sec' } }),
+    });
+    return ((await res.json()) as { id: string }).id;
+  }
+
+  it('points the authorize redirect_uri at the address the dev server answers on', async () => {
+    const id = await createCredential();
+    const res = await fetch(`${oauthBase}/credentials/${id}/oauth/authorize-url`, { method: 'POST' });
+    const body = (await res.json()) as { authorize_url: string };
+
+    const expected = `${oauthOrigin}/api/v1/credentials/oauth/callback`;
+    expect(credential.authorizeRedirectUri).toBe(expected);
+    expect(new URL(body.authorize_url).searchParams.get('redirect_uri')).toBe(expected);
+  });
+
+  it('exchanges the code against the same redirect_uri it authorized with', async () => {
+    const id = await createCredential();
+    await fetch(`${oauthBase}/credentials/${id}/oauth/authorize-url`, { method: 'POST' });
+    const res = await fetch(`${oauthBase}/credentials/oauth/callback?code=abc&state=${id}`);
+
+    expect(res.status).toBe(200);
+    expect(credential.exchangeRedirectUri).toBe(credential.authorizeRedirectUri);
+    expect(credential.exchangeRedirectUri).toBe(`${oauthOrigin}/api/v1/credentials/oauth/callback`);
   });
 });

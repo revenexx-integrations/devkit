@@ -1,5 +1,269 @@
 # @revenexx/integrations-node-devkit
 
+## 0.8.0
+
+### Minor Changes
+
+- b553c9f: The preview host moves to `@revenexx/studio-integrations` 1.4.1
+  
+  Three minors and a patch on from the 1.1.1 pin, and 1.3.0 is the release the
+  devkit has been half of since 0.7.0: `showIf` and `state-ref` shipped here as
+  validator behaviour (PO-410, PO-374) against an editor that did not yet draw
+  either. Both halves now exist, so what the preview shows and what
+  `config:validate` refuses are the same rule rather than two guesses about it.
+  
+  **What a node author sees that they did not before.** A setting carrying a
+  `showIf` condition is drawn only while the condition holds, and is not counted
+  among the optional ones either — the mock skips that setting on validate for the
+  same reason, so a hidden setting is never demanded. A `state-ref` setting is a
+  picker over the namespaces of its `stateRole` instead of the raw JSON box a field
+  type the editor did not know fell back to; typing `"article"` as a JSON string is
+  no longer the way in. A setting declared `multiline` gets a text area with room
+  for what it asked for. And a node exported in more than one version can be moved
+  between them from inside the dialog, with what the move costs — what travels,
+  what is dropped, what arrives needing an answer — listed before it happens.
+  
+  **The node page owns the state namespaces, because there is no workflow to.**
+  The inspector stages a namespace declared inside the picker and, on Save, hands
+  it up (`declare-state`) for the editor to write into the workflow blob. Nothing
+  here holds a blob, so without an owner the namespace an author had just declared
+  would disappear from the picker the moment they saved it, and again on every
+  reopen. The page keeps the list for the session: it starts empty, a declaration
+  kept by Save joins it, a reload starts over. The mock still does not check a
+  namespace against any declaration — that is the engine's half, and it has no
+  local equivalent.
+  
+  **`GET /nodes` now answers newest version first per slug**, with the slugs
+  themselves left in the order the package exports them. This is the bump's one
+  real bug rather than a nicety: from 1.3.0 the studio's catalogue reads "a newer
+  version of this node exists" as *position in the array* rather than by parsing a
+  semver, matching a registry that answers each slug's versions semver-descending.
+  The mock answered in export order — the order a human writes versions in, oldest
+  first — so a package exporting 1.0.0 before 2.0.0 would have had the inspector
+  announce the older version as the upgrade and stay silent about the real one.
+  `GET /nodes/{slug}/versions` has always sorted; the listing the catalogue is
+  actually built from now sorts the same way, and `tests/server.test.ts` holds the
+  two together. The contract test cannot catch this class of drift at all — OpenAPI
+  declares shapes, not order — which is now written into
+  `docs/architecture.md`.
+  
+  One order is now one rule, rather than sorted in the places someone remembered.
+  `GET /nodes/{slug}/latest` and `DELETE` on the same path resolved `latest` as the
+  FIRST export of the slug while `config:resolve`, `config:validate` and
+  `execute:test` went through a helper that sorts — so for that same package the
+  mock would describe 1.0.0 and execute 2.0.0 under one URL. Both now go through
+  the ordering `GET /nodes` is built from. And a prerelease is ranked below its own
+  release: `2.0.0-beta.1` used to parse its patch as `0` and compare equal to
+  `2.0.0`, a tie the stable sort broke by export order, so a package exporting its
+  beta first offered an author pinned to the stable an "upgrade" to the beta — the
+  same wrong-direction prompt, from a different cause. Prerelease identifiers
+  follow semver precedence (numeric below alphanumeric, shorter set below longer),
+  and build metadata is ignored.
+  
+  **1.4.0 rearranges the dialog the preview exists to show.** Three of its
+  changesets land on the node configuration surface and on nothing else the host
+  mounts:
+  
+  - The Parameters tab draws a node's settings in the **order the node declares
+    them** (PO-463), where it used to draw every required setting first and fold
+    every optional one away. Four or fewer are all shown; past the fourth a
+    setting stands when it is required and folds when it is not. For a node author
+    this moves the lever into their own manifest: a setting that is central to the
+    node belongs near the top of `config`, whether or not the API would refuse it
+    empty. Requiredness no longer stands in for importance.
+  - A setting inside a **repeating row** is drawn as what it declares (PO-436) —
+    its options, its default, its description, its required marker, and its
+    `showIf` resolved against that row — instead of as an empty text box whatever
+    the manifest said. A new row now carries each sub-setting's declared default
+    and omits one that has none, where it used to seed an empty string under every
+    key, which is a value rather than an absence.
+  - An option declared with an **empty value** — "unchanged", "all kinds" — is
+    selectable (PO-422). It used to be refused by the control underneath, which
+    reserves the empty value for "nothing selected", and the refusal took the
+    dialog's dismissal machinery with it.
+  
+  **Which opens one gap the other way, and this bump documents rather than closes
+  it.** `validateNodeConfig` reads a node's settings one level deep: a field
+  declaring `items` or `properties` is checked for being an array or an object,
+  plus the `minLength`/`maxLength` on the field itself, and the sub-settings inside
+  it are neither demanded when required nor type-checked, with no per-row `showIf`.
+  That cost nothing while the form drew a nested setting as a text box; from 1.4.0
+  the dialog marks a nested setting required and the mock does not refuse it empty.
+  The inversion is now stated in the fidelity caveats and in `docs/testing.md`,
+  where the `showIf` rule it mirrors is written down.
+  
+  **The Save/Cancel arrangement on the node page is unchanged and still needed.**
+  `NodeInspector` emits `update` only when its draft differs from `selection`, then
+  always emits `close`, so the stamped `ALWAYS_DIRTY` key is still what tells a Save
+  from a Cancel. 1.3.0 widens `dirty` to count a staged state declaration as well,
+  but `commit()` gates the `update` emit on the draft compare alone in 1.4.1 exactly
+  as in 1.3.0, so nothing about the workaround moves. The upstream `save` event that
+  would retire it still does not exist.
+  
+  **Nothing else in the host moves.** 1.4.1 declares the same dependencies and the
+  same peers as 1.1.1, so the `@revenexx/studio` ^0.2.2, `@revenexx/studio-shared`
+  ^0.3.0 and `@solar-icons/nuxt` ^1.2.1 pins stand as they are, and the host's tree
+  resolves with no peer conflict. `NodeInspector`'s props and events are
+  byte-identical between 1.3.0 and 1.4.1, so `preview-host/pages/nodes.vue` needs
+  nothing new.
+  
+  The rest of the three releases lands outside what the preview shows: the
+  tenant-wide Runs page paging and sorting on the platform (which needs `?sort=` on
+  `GET /v1/runs`, PO-371), build states that become true on their own, deleting a
+  workflow from its editor, the loading announcements, template installation taking
+  the same step from both routes into it (PO-244), the run replay losing its
+  unreachable `single` mode (PO-350), and — the whole of 1.4.1 — a refused
+  credential save stating each reason once (PO-477). The Workflows surface is hidden
+  and `…/runs/*` is deliberately unmocked, so the mock is untouched there: the one
+  route the three releases change is `…/runs/{id}/steps?include_payloads=` (PO-421),
+  inside that unmocked prefix.
+  
+  Two traces do reach the mock, and both already hold. A test run from the editor
+  now names the workflow it belongs to, so `POST …/execute:test` may carry
+  `workflow_id`; the preview has no workflow to name and never sends one, and the
+  mock reads `config`, `inputs` and `timeout_ms` and ignores the rest. And PO-394
+  gives the studio one answer to whether a response carries a `data` envelope,
+  replacing nine expressions that each decided for themselves — the rule being that
+  a collection is wrapped and a single record is bare. The shared `unwrapRecord`
+  still accepts either shape and only fails on an absent record, and the mock's
+  wrapped single records are what this repository's own contract snapshot declares
+  (`GET /credential-types/{slug}` among them), so nothing here needs to change. If
+  that leniency is ever tightened to match the table, the envelope is a shape — which
+  means the contract test would catch it, unlike the ordering above.
+
+### Patch Changes
+
+- 0da0d11: The OAuth redirect URI carries the port the dev server actually listens on
+  
+  `handle()` parsed every request against the fixed base `http://localhost`, and
+  `req.url` is only ever the path, so `url.origin` was `http://localhost` — port 80
+  — no matter where the server was bound. The authorize route did not even go
+  through it: it passed a hard-coded `http://localhost/api/v1/credentials/oauth/callback`.
+  
+  The two agreed with each other, which is why nothing 400s at the provider, and
+  also why the failure is confusing: consent succeeds, and then the browser is sent
+  to port 80, where the devkit is not listening. On the default port the callback
+  that completes the flow was unreachable, so a 3-legged credential could never
+  reach `active` in the preview.
+  
+  Both now derive from the `Host` header of the incoming request, so with
+  `--port 3555` the redirect URI is
+  `http://localhost:3555/api/v1/credentials/oauth/callback` — the value to register
+  with the provider, now written down in `docs/architecture.md`. Authorize and
+  exchange still read from one place, so they cannot drift apart; a missing or
+  malformed `Host` falls back to the old base rather than throwing.
+  
+  Nothing else reads `url.origin`, so no other route changes. Packages that worked
+  around this by overriding `buildAuthorizeUrl`/`exchangeCode` to substitute their
+  own redirect URI can drop the override — the value they receive is now the
+  reachable one.
+
+## 0.7.0
+
+### Minor Changes
+
+- a3f5a19: Support `ctx.state`, the tenant state store nodes gained in PO-374.
+
+  `createMockContext` now builds a `state` mock, and it is **stateful**: what the
+  node writes, it reads back. A node's interesting behaviour is the second run —
+  the one that finds the mapping it created the first time — and a mock that
+  forgot would only ever exercise the create branch. Seed what earlier runs left
+  behind with `state: { mappings, cursors, claims, digests }`, force the engine's
+  refusal with `stateError`, and assert on the calls: every operation is a
+  `vi.fn()`.
+
+  It reads back _when the store would let it_. A mapping and a claim take effect
+  immediately; a cursor and a digest are staged and adopted only once the run
+  completes, so `cursor.get` answers what the last completed run left. The mock
+  context gains `completeRun()` for that ending — call it between two `execute`
+  calls to play the second run, leave it out to play the run that failed after
+  advancing its watermark. Re-pointing either side of an existing correlation is
+  refused, and a `ttlSeconds` outside 1…31536000 is refused rather than clamped:
+  the rules a node would otherwise meet for the first time in production.
+
+  The local preview's `execute:test` is wired to the dev store too, so a node that
+  correlates ids behaves on its second call like a second run, and a preview call
+  that fails leaves its staged cursors and digests behind. That the store is
+  writable at all is a deliberate divergence from production, where author-time
+  execution is read-only — see the fidelity caveats in the README.
+
+  `POST /nodes/{slug}/{version}/config:validate` now honours `showIf` and knows
+  `state-ref`, the two config-field additions that ride along in the same SDK
+  release (PO-410, PO-374). A setting whose condition does not hold is skipped
+  whole — not demanded when required, not type-checked either, because the editor
+  does not draw it — using the SDK's own `settingApplies` rather than a second
+  copy of the rule. That covers a `dynamic-schema` marker carrying the condition:
+  the group it stands for is neither demanded nor resolved, so no author-time
+  resolver runs for a group nobody is looking at. A `state-ref` is checked as the
+  namespace name it carries.
+
+  Requires `@revenexx/integrations-node-sdk` >= 1.0.0, which is where
+  `INodeContext.state` is declared. That SDK release is a major one precisely
+  because `state` is required — and this package is the reason it is felt
+  immediately: `MockContext` is `INodeContext & {…}`, so it cannot compile against
+  the new contract without supplying `state`.
+
+### Patch Changes
+
+- 4394123: The preview host pins `@revenexx/studio` ^0.2.2, so its dependencies install again
+
+  Moving the host to `@revenexx/studio-shared` ^0.3.0 left `@revenexx/studio` at `^0.1.3`,
+  and 0.3.x peers `@revenexx/studio` `^0.2.0`. Because a caret on a 0.x version pins the
+  minor, `^0.1.3` can never reach 0.2.x — so the two pins were unsatisfiable together and
+  `npm install` in the copied host failed outright with `ERESOLVE`, before Nuxt ever booted.
+  The devkit runs a plain `npm install` with no `--legacy-peer-deps`, so nothing papered over
+  it: every fresh preview was broken, not merely resolving oddly.
+
+  0.2.2 is the current release. Its only new peer, `vue-sonner` `^2.0.9`, is already
+  satisfied by the host's `^2.0.0` pin.
+
+  `@solar-icons/nuxt` stays on ^1.2.1 deliberately. Dependabot groups it with studio and
+  offers ^2.1.0, but `@revenexx/studio-shared` 0.3.x peers `@solar-icons/nuxt` `^1.2.0` in
+  both of its releases, so the major would trade this conflict for the same one one package
+  over — and v2 reworks the module options and the auto-import names the studio components
+  rely on. It waits until studio-shared moves.
+
+## 0.6.0
+
+### Minor Changes
+
+- 9f77507: The preview host moves to `@revenexx/studio-integrations` 1.1.1
+
+  The pin was 0.6.0, four releases and one major behind. The major (1.0.0) is about the
+  workflow editor — one Save in the header, every dialog left by Cancel or Done — which the
+  preview does not show, and it left `NodeInspector` alone: `update` is still emitted only
+  when the draft is `dirty`, `close` still always, and `refusedFields` is still there. So the
+  node preview's arrangement from 0.5.1 — the key stamped onto `selection` that makes `dirty`
+  permanently true, which is what tells a Save from a Cancel — holds unchanged. The upstream
+  `save` event that would retire it still does not exist.
+
+  What the node preview gains is 1.0.0's reading of a manifest's `inputs`: the panel of
+  available data now opens with what the node itself takes — data type, whether an upstream
+  connection is required, and the publisher's sentence about it — and an output port's and
+  field's descriptions appear on the Output tab and on the handle's tooltip. The studio had
+  been asking the catalogue under a key the service does not use and dropping all of it. The
+  mock passes the manifest through verbatim, so a node package that describes its ports gets
+  this with no devkit change.
+
+  `@revenexx/studio-shared` moves to ^0.3.0 with it, which is what 1.1.1 requires, and that
+  brings two dependencies the host did not need before. 0.3.0 adds the Talkback realtime
+  seam, and its `talkback.js` reaches for `@revenexx/talkback-js` through a dynamic import
+  that Rolldown must still resolve — so `nuxt build` fails outright without the package, even
+  though the composable is inert while `talkbackHost` is empty, which in the preview it always
+  is. `@revenexx/talkback-js` and its own peer `centrifuge` are therefore direct dependencies
+  of the host: present so the bundler can resolve them, never connected to.
+
+  **Where the preview is now thinner than production.** studio 1.1.0 stopped assembling the
+  tenant's runs, counts and schedules in the browser and reads the platform's own lists
+  instead — `GET /runs`, `/runs/summary`, `/runs/latest-per-workflow`, `/schedules` and
+  `/dead-letters/summary`. The mock serves none of them, so the Integrations dashboard's
+  figures and the Schedules page report a refused read rather than the zeroes they used to
+  show. That is the phase-1 boundary the workflow editor is already behind, and it is not new
+  scope — but it is newly visible, and the guard that should have said so was asleep: the
+  vendored contract snapshot predates all five endpoints, so `tests/contract.test.ts` passes
+  while the mock lacks them. Refreshing it is its own change — it also surfaces a renamed
+  trigger path parameter and a widened `secrets` response — and is not done here.
+
 ## 0.5.1
 
 ### Patch Changes

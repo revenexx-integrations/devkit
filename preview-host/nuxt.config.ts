@@ -26,7 +26,7 @@ export default defineNuxtConfig({
   // SPA: no SSR, so the studio's browser-only composables (localStorage etc.)
   // behave exactly as in the real cockpit, and boot is fast.
   ssr: false,
-  // studio-shared 0.2.x ships as a Nuxt MODULE (not a layer) — it must be
+  // studio-shared 0.3.x ships as a Nuxt MODULE (not a layer) — it must be
   // registered in 'modules', before studio-integrations which builds on it.
   // @solar-icons/nuxt provides the #solar-icons alias the studio components import.
   modules: ['@revenexx/studio-shared', '@solar-icons/nuxt', '@revenexx/studio-integrations'],

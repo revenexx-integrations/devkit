@@ -8,10 +8,14 @@ import {
   type ICredentialTestResult,
   type INode,
   type INodeAuthorContext,
+  type INodeDescription,
+  type INodeState,
   type IOutputPort,
   isOAuthAuthorizeCredential,
+  settingApplies,
 } from '@revenexx/integrations-node-sdk';
 import { DevApiError } from './errors.js';
+import { assertNotRepointed, assertTtlInRange, DEFAULT_CLAIM_TTL_SECONDS } from './state-rules.js';
 import type { LoadedPackage } from './loader.js';
 import type { DevStore } from './store.js';
 
@@ -29,16 +33,72 @@ const noopLogger = {
   error() {},
 };
 
+/**
+ * Splits `1.2.3-rc.1+build.5` into its three numeric parts and its prerelease
+ * identifiers. Build metadata is dropped: semver says it takes no part in
+ * precedence.
+ */
+function parseSemver(version: string): { core: number[]; pre: string[] } {
+  const [withoutBuild] = version.split('+');
+  const dash = withoutBuild!.indexOf('-');
+  const core = (dash === -1 ? withoutBuild! : withoutBuild!.slice(0, dash)).split('.').map(n => Number.parseInt(n, 10) || 0);
+  const pre = dash === -1 ? [] : withoutBuild!.slice(dash + 1).split('.');
+  return { core, pre };
+}
+
+/**
+ * Semver precedence for prerelease identifiers (semver.org §11.4): a numeric
+ * identifier compares numerically and ranks below an alphanumeric one, an
+ * alphanumeric one compares ASCII-wise, and when one set runs out first the
+ * shorter ranks lower — `1.0.0-rc.1` below `1.0.0-rc.1.1`.
+ */
+function comparePrerelease(a: string[], b: string[]): number {
+  // A version WITHOUT a prerelease outranks the same version with one.
+  if (a.length === 0 || b.length === 0) {
+    return (a.length === 0 ? 1 : 0) - (b.length === 0 ? 1 : 0);
+  }
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const ia = a[i];
+    const ib = b[i];
+    if (ia === undefined || ib === undefined) {
+      return ia === undefined ? -1 : 1;
+    }
+    const na = /^\d+$/.test(ia) ? Number(ia) : null;
+    const nb = /^\d+$/.test(ib) ? Number(ib) : null;
+    if (na !== null && nb !== null) {
+      if (na !== nb) {
+        return na - nb;
+      }
+      continue;
+    }
+    if (na !== null || nb !== null) {
+      return na !== null ? -1 : 1; // numeric ranks below alphanumeric
+    }
+    if (ia !== ib) {
+      return ia < ib ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Orders two versions, newest last. Prereleases are part of the answer rather
+ * than noise: array position is what the studio's catalogue reads as "a newer
+ * version exists" (see `listNodesNewestFirst`), and a naive parse put
+ * `2.0.0-beta.1` level with `2.0.0` — a tie a stable sort then broke by export
+ * order, so a package exporting its beta first would have offered an author
+ * pinned to the stable an "upgrade" to the beta.
+ */
 function compareSemver(a: string, b: string): number {
-  const pa = a.split('.').map(n => Number.parseInt(n, 10) || 0);
-  const pb = b.split('.').map(n => Number.parseInt(n, 10) || 0);
+  const pa = parseSemver(a);
+  const pb = parseSemver(b);
   for (let i = 0; i < 3; i++) {
-    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    const diff = (pa.core[i] ?? 0) - (pb.core[i] ?? 0);
     if (diff !== 0) {
       return diff;
     }
   }
-  return 0;
+  return comparePrerelease(pa.pre, pb.pre);
 }
 
 export function nodeVersions(loaded: LoadedPackage, slug: string): string[] {
@@ -46,6 +106,34 @@ export function nodeVersions(loaded: LoadedPackage, slug: string): string[] {
     .filter(n => n.description.slug === slug)
     .map(n => n.description.version)
     .sort((a, b) => compareSemver(b, a));
+}
+
+/**
+ * The order `GET /nodes` lists a package's nodes in: every version of a slug
+ * together, newest first, with the slugs themselves in the order the package
+ * exports them.
+ *
+ * Export order alone is not enough any more. The registry answers each slug's
+ * versions semver-descending, and the studio's catalogue takes that order as
+ * given rather than parsing a semver of its own — since
+ * `@revenexx/studio-integrations` 1.3.0 `newerExecutableVersions()` reads "newer
+ * than the pinned one" as "earlier in this array". A package that exports 1.0.0
+ * before 2.0.0 — the order a human writes them in — would therefore have the
+ * inspector announce the OLDER version as the upgrade, and say nothing about the
+ * real one. `GET /nodes/{slug}/versions` has always sorted; this is the same
+ * order on the listing the catalogue is actually built from.
+ */
+export function listNodesNewestFirst(nodes: readonly INodeDescription[]): INodeDescription[] {
+  const bySlug = new Map<string, INodeDescription[]>();
+  for (const node of nodes) {
+    const group = bySlug.get(node.slug);
+    if (group) {
+      group.push(node);
+    } else {
+      bySlug.set(node.slug, [node]);
+    }
+  }
+  return [...bySlug.values()].flatMap(group => [...group].sort((a, b) => compareSemver(b.version, a.version)));
 }
 
 export function findNode(loaded: LoadedPackage, slug: string, version?: string): INode {
@@ -96,6 +184,95 @@ export async function resolveCredentialInstance(loaded: LoadedPackage, store: De
   const cred = findCredential(loaded, instance.credentialTypeSlug);
   const ctx = credentialContext(store, credentialId);
   return cred.resolve(ctx, instance.config, instance.durableCreds);
+}
+
+/**
+ * `ctx.state` for one preview run (PO-374), backed by the dev store — so a node
+ * that correlates ids behaves on its second call like a second run.
+ *
+ * Returns the state surface together with the `commit` that ends the run. A
+ * mapping and a claim go straight to the store, because a correlation dropped by
+ * a later failure is how the next run creates a duplicate; a cursor and a digest
+ * are staged here and written only when `commit` is called, so a read during the
+ * run answers what the last *completed* run left. That is the store's visibility
+ * rule, and it is the reason `INodeState` has four operations instead of a
+ * generic get/set.
+ *
+ * **Deliberately divergent from production in one respect**, and the one place
+ * this mock does not mirror the real API: there, author-time execution is
+ * read-only, because a correlation created by a test click would be
+ * indistinguishable from one a production run made and the next real run would
+ * trust it. Locally there is no such stake — the whole store is a disposable
+ * overlay in `.revenexx-dev/` — and refusing writes would make it impossible to
+ * exercise the very nodes the state store exists for. The divergence is noted in
+ * the README.
+ */
+function createRunState(store: DevStore): { state: INodeState; commit: () => void } {
+  /** Staged for this run: written to the store by `commit`, dropped otherwise. */
+  const staged: Array<{ namespace: string; role: 'cursor' | 'digest'; key: string; value: unknown }> = [];
+  const stage = (entry: (typeof staged)[number]): void => {
+    staged.push(entry);
+  };
+
+  const state: INodeState = {
+    mapping: {
+      async get(namespace, key, side = 'left') {
+        if (side === 'left') {
+          const entry = store.getStateEntry('mapping', namespace, key);
+          return entry ? String(entry.value) : null;
+        }
+        const match = store.listStateEntries('mapping', namespace).find(e => String(e.value) === key);
+        return match ? match.key : null;
+      },
+      async put(namespace, left, right) {
+        assertNotRepointed(
+          namespace,
+          store.listStateEntries('mapping', namespace).map(e => [e.key, String(e.value)] as [string, string]),
+          left,
+          right,
+        );
+        store.putStateEntry({ namespace, role: 'mapping', key: left, value: right });
+      },
+    },
+    cursor: {
+      async get(namespace, partitionKey = '') {
+        return store.getStateEntry('cursor', namespace, partitionKey)?.value;
+      },
+      async set(namespace, value, partitionKey = '') {
+        stage({ namespace, role: 'cursor', key: partitionKey, value });
+      },
+    },
+    async claim(namespace, key, opts) {
+      assertTtlInRange(opts?.ttlSeconds);
+      const held = store.getStateEntry('dedupe', namespace, key);
+      // Expiry is honoured so a short TTL can actually be exercised locally,
+      // rather than a claim looking permanent for the whole session.
+      if (held && Number(held.value) > Date.now()) {
+        return false;
+      }
+      const ttlSeconds = opts?.ttlSeconds ?? DEFAULT_CLAIM_TTL_SECONDS;
+      store.putStateEntry({ namespace, role: 'dedupe', key, value: Date.now() + ttlSeconds * 1000 });
+      return true;
+    },
+    digest: {
+      async unchanged(namespace, entityKey, digest) {
+        return store.getStateEntry('digest', namespace, entityKey)?.value === digest;
+      },
+      async set(namespace, entityKey, digest) {
+        stage({ namespace, role: 'digest', key: entityKey, value: digest });
+      },
+    },
+  };
+
+  return {
+    state,
+    commit() {
+      for (const entry of staged) {
+        store.putStateEntry(entry);
+      }
+      staged.length = 0;
+    },
+  };
 }
 
 function authorContext(loaded: LoadedPackage, store: DevStore, config: Record<string, unknown>, locale?: string): INodeAuthorContext {
@@ -233,6 +410,10 @@ function validateField(field: IConfigField, value: unknown, errors: Record<strin
   switch (field.type) {
     case 'string':
     case 'secret-ref':
+    // A `state-ref` carries the chosen namespace NAME, so a string is all there
+    // is to check here: which names exist is the workflow's declaration, and
+    // nothing declares one locally (see the README's fidelity caveats).
+    case 'state-ref':
     case 'expression':
       if (typeof value !== 'string') {
         push('Expected a string.');
@@ -318,6 +499,14 @@ function validateField(field: IConfigField, value: unknown, errors: Record<strin
  * flattened keys. Deep cross-field validation is intentionally out of scope
  * (the production service does that on save); this mirrors the mock's
  * "light, schema-based" fidelity. Unknown extra keys are ignored.
+ *
+ * A field whose `showIf` does not hold (SDK 1.0.0, PO-410) is skipped whole —
+ * not demanded when required, and not type-checked either. The editor does not
+ * draw it, so whatever is left under its key is a leftover from a choice the
+ * author has since changed, and refusing to save because of it would leave them
+ * with an error against a field they cannot see. `settingApplies` comes from the
+ * SDK rather than being re-implemented here: the editor drawing the field and
+ * this validator deciding whether to demand it have to agree word for word.
  */
 export async function validateNodeConfig(loaded: LoadedPackage, store: DevStore, input: ValidateNodeConfigInput): Promise<ValidateNodeConfigResult> {
   const node = findNode(loaded, input.slug, input.version);
@@ -329,10 +518,19 @@ export async function validateNodeConfig(loaded: LoadedPackage, store: DevStore,
     if (field.type === 'dynamic-schema') {
       continue; // resolved child fields are validated below
     }
+    if (!settingApplies(field, config)) {
+      continue; // its `showIf` says it is not on screen — see the doc comment
+    }
     validateField(field, config[field.key], errors);
   }
 
-  if (fields.some(f => f.type === 'dynamic-schema') && node.resolveConfigSchema) {
+  // A `dynamic-schema` marker can carry a `showIf` of its own — the condition
+  // sits on `IConfigFieldBase`, not on the leaf types — and then the whole group
+  // it stands for is off screen. `resolveConfigSchema` is per node rather than
+  // per field, so a node with several markers resolves as soon as one of them
+  // applies: which children came from which marker is not something the callback
+  // says, and demanding none of them would be the worse guess of the two.
+  if (fields.some(f => f.type === 'dynamic-schema' && settingApplies(f, config)) && node.resolveConfigSchema) {
     const ctx = authorContext(loaded, store, config, input.locale);
     let children: IConfigField[];
     try {
@@ -344,6 +542,9 @@ export async function validateNodeConfig(loaded: LoadedPackage, store: DevStore,
       throw new DevApiError(502, `Node resolve failed: ${(err as Error).message}`);
     }
     for (const child of children) {
+      if (!settingApplies(child, config)) {
+        continue;
+      }
       validateField(child, config[child.key], errors);
     }
   }
@@ -399,6 +600,7 @@ export async function executeNodeTest(loaded: LoadedPackage, store: DevStore, in
   };
 
   const timeoutMs = Math.max(MIN_TIMEOUT_MS, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const run = createRunState(store);
   const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<never>((_resolve, reject) => {
@@ -425,10 +627,16 @@ export async function executeNodeTest(loaded: LoadedPackage, store: DevStore, in
         return (await resolveCredentialInstance(loaded, store, id)).credentials;
       },
     },
+    state: run.state,
   };
 
   try {
     const result = await Promise.race([node.execute(ctx, { ...input.config, ...input.inputs }), expired]);
+    // The run completed, so what it staged is adopted. A node that threw, or one
+    // the timeout cut off, leaves its cursors and digests where they were — the
+    // failed-run case the staging rule exists for, and the one an author is most
+    // likely to have got wrong.
+    run.commit();
     return { outputs: result.outputs ?? {}, branch: result.branch ?? null, logs };
   } catch (err) {
     if (err instanceof DevApiError) {
