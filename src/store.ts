@@ -275,14 +275,7 @@ export class DevStore {
     return this.workflows.get(id);
   }
 
-  createWorkflow(input: {
-    name: string;
-    blob: Record<string, unknown>;
-    blobDefinitionVersion?: string;
-    description?: string | null;
-    active?: boolean;
-    executionMode?: string;
-  }): WorkflowRecord {
+  createWorkflow(input: { name: string; blob: Record<string, unknown>; blobDefinitionVersion?: string; description?: string | null; active?: boolean; executionMode?: string }): WorkflowRecord {
     const ts = now();
     const record: WorkflowRecord = {
       id: this.nextWorkflowId++,
@@ -337,14 +330,7 @@ export class DevStore {
     return this.triggers.get(id);
   }
 
-  createTrigger(input: {
-    workflowId: number;
-    type: string;
-    name?: string | null;
-    config?: Record<string, unknown>;
-    active?: boolean;
-    id?: string;
-  }): TriggerRecord {
+  createTrigger(input: { workflowId: number; type: string; name?: string | null; config?: Record<string, unknown>; active?: boolean; id?: string }): TriggerRecord {
     const ts = now();
     const record: TriggerRecord = {
       id: input.id ?? randomUUID(),
