@@ -51,9 +51,6 @@ updates:
           - "version-update:semver-major"
           - "version-update:semver-minor"
           - "version-update:semver-patch"
-      # TypeScript 7 breaks the declaration build. PO-803 lifts this.
-      - dependency-name: "typescript"
-        update-types: ["version-update:semver-major"]
       # Vitest 5 moves with the devkit test harness. PO-804 lifts this.
       - dependency-name: "vitest"
         update-types: ["version-update:semver-major"]
