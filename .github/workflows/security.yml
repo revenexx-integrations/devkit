@@ -1,0 +1,50 @@
+name: Security Scan
+
+# Proposed by the PO-279 security audit (revenexx/integrations,
+# docs/security/audit-2026-08.md). The full six-layer scanner lives there and
+# covers the whole studio vertical; this is the per-repo half — the two layers
+# that answer questions about this repository alone.
+#
+# NON-BLOCKING to start. Both steps report and pass, so landing this cannot red
+# -wall open PRs. Make them fail once the baseline they report is clean or
+# explicitly accepted; the audit's own view is that a gate switched on before
+# that gets switched off within a week.
+#
+# Reproduce either step locally by running the same docker command.
+
+on:
+  pull_request:
+  schedule:
+    # Weekly. This is the run that matters: advisories land against unchanged
+    # code, so a scan that only fires on a lockfile change would never see them.
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # No credentials are needed after checkout, and leaving the token in
+          # .git/config lets any later step read it.
+          persist-credentials: false
+          # gitleaks scans the full history, not the worktree. Without this the
+          # secrets step only sees the tip commit and reports a clean result it
+          # has not earned.
+          fetch-depth: 0
+
+      - name: Secrets, across the full git history
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.28.0 detect \
+            --source=/repo --redact --no-banner --exit-code=0
+
+      - name: Dependency advisories
+        run: |
+          docker run --rm --network host -v "$PWD:/src:ro" \
+            ghcr.io/google/osv-scanner:v2.2.3 scan source --recursive /src || true
