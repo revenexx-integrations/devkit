@@ -39,7 +39,10 @@ jobs:
     # Enforce that every PR carries a changeset (hard gate; add it as a required
     # status check in .github/rulesets/main.json). Use `npx changeset --empty`
     # for PRs that intentionally need no release (docs/CI/tests).
-    if: github.event_name == 'pull_request'
+    # Not on a Dependabot pull request: Dependabot cannot write a changeset, and
+    # its bump reaches the next release anyway (PO-760). The author of the pull
+    # request decides, not the actor, so a re-run by a person skips it too.
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
 
     permissions:
