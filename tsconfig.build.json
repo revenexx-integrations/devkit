@@ -1,0 +1,17 @@
+{
+  // The declarations the package publishes. TypeScript 7 writes them itself:
+  // tsup's declaration build still needs the compiler API that TypeScript 7 no
+  // longer ships (egoist/tsup#1408), so tsup bundles the JavaScript and this
+  // emits one .d.ts per module beside it (PO-803), `dist/index.d.ts` and
+  // `dist/testing/index.d.ts` among them. Tests and the CLI bin are left out —
+  // neither is imported by a consumer.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "declarationMap": false,
+    "outDir": "./dist"
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts", "src/cli.ts"]
+}
