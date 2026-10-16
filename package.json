@@ -47,7 +47,7 @@
     "preview-host"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && tsc -p tsconfig.build.json",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -66,8 +66,8 @@
     "@changesets/cli": "^3.0.3",
     "@revenexx/integrations-node-sdk": ">=1.0.0",
     "@types/node": "^24.0.0",
-    "tsup": "^8.0.0",
-    "typescript": "^5.0.0",
+    "tsup": "^9.0.0",
+    "typescript": "^7.0.2",
     "vitest": "^2.1.0",
     "yaml": "^2.9.0"
   },
