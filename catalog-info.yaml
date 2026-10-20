@@ -13,7 +13,7 @@ metadata:
     - testing
 spec:
   type: library
-  owner: group:default/platform
+  owner: group:default/integration-engineering
   system: revenue-cloud
   lifecycle: experimental
   dependsOn:
