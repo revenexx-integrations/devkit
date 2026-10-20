@@ -48,7 +48,13 @@ jobs:
           cache: 'npm'
           registry-url: 'https://registry.npmjs.org'
 
-      - run: npm install -g npm@^11.5.1 # OIDC needs npm >= 11.5.1
+      - name: npm can publish with OIDC
+        # OIDC needs npm >= 11.5.1. Node 24 ships it (24.22.0 has 11.19.1), so
+        # nothing is installed here: an install outside the lockfile, in the job
+        # that holds the publish identity, is what PO-298 removed.
+        run: |
+          v="$(npm -v)"
+          printf '11.5.1\n%s\n' "$v" | sort -VC || { echo "npm $v is older than 11.5.1, which OIDC publishing needs" >&2; exit 1; }
 
       - run: npm ci
 
