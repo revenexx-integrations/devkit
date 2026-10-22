@@ -4,7 +4,8 @@ The harness is a separate entry point, `@revenexx/integrations-node-devkit/testi
 needs no running server and no network access.
 
 `vitest` is an **optional peer dependency** — the harness uses `vi` spies, so install
-vitest in your node package if it is not there already.
+vitest in your node package if it is not there already. From Vitest 5 on, `vite` is a
+required peer of vitest rather than a dependency of it; install it alongside.
 
 ## What it provides
 
@@ -15,6 +16,7 @@ vitest in your node package if it is not there already.
 | `runCredentialResolve` | Driving a credential's `resolve`, including durable-credential rotation. |
 | `stubFetch` | Replacing global `fetch` for the duration of a test. |
 | `fakeTokenEndpoint` | A canned OAuth token endpoint to hand to `stubFetch`. |
+| `AnyMock`, `AnyFn` | Typing a spy the harness hands out, e.g. a variable holding `ctx.secrets.get`. |
 
 ## Example
 
