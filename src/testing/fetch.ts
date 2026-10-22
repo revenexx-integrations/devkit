@@ -1,4 +1,5 @@
 import { vi } from 'vitest';
+import type { AnyFn, AnyMock } from './mock.js';
 
 /**
  * Utilities for stubbing the global `fetch` so a credential's `resolve` /
@@ -42,14 +43,14 @@ export function buildResponse(init: StubResponseInit): Response {
 }
 
 export interface StubFetchResult {
-  /** The `vi.fn()` installed as `globalThis.fetch` — assert calls on it. */
-  fetchMock: ReturnType<typeof vi.fn>;
+  /** The `vi.fn<AnyFn>()` installed as `globalThis.fetch` — assert calls on it. */
+  fetchMock: AnyMock;
   /** Restores the previous `globalThis.fetch`. */
   restore(): void;
 }
 
 /**
- * Replaces `globalThis.fetch` with a `vi.fn()` driven by `handler`. Pass a
+ * Replaces `globalThis.fetch` with a `vi.fn<AnyFn>()` driven by `handler`. Pass a
  * static {@link StubResponseInit} to answer every request identically, or a
  * {@link FetchHandler} to branch on url/method. Call `restore()` when done
  * (e.g. in `afterEach`).
@@ -58,7 +59,7 @@ export function stubFetch(handler: FetchHandler | StubResponseInit): StubFetchRe
   const previous = globalThis.fetch;
   const resolveInit: FetchHandler = typeof handler === 'function' ? handler : () => handler;
 
-  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+  const fetchMock = vi.fn<AnyFn>(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
     const out = await resolveInit({ url, method, init });

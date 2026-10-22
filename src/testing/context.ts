@@ -1,12 +1,13 @@
 import type { INodeContext } from '@revenexx/integrations-node-sdk';
 import { vi } from 'vitest';
+import type { AnyFn, AnyMock } from './mock.js';
 import { assertNotRepointed, assertTtlInRange } from '../state-rules.js';
 
 /**
  * Drop-in replacement for the `createMockContext` helper that was, until this
  * package existed, copy-pasted byte-for-byte into every node repo's
  * `tests/helpers/context.ts`. Builds a full {@link INodeContext} with
- * `vi.fn()`-backed `logger`, `secrets.get`, `credentials.get` and `state` so a
+ * `vi.fn<AnyFn>()`-backed `logger`, `secrets.get`, `credentials.get` and `state` so a
  * node's `execute` can be unit-tested in isolation.
  *
  * The state mock is **stateful on purpose**: what the node writes, it reads
@@ -25,25 +26,25 @@ import { assertNotRepointed, assertTtlInRange } from '../state-rules.js';
  */
 
 export type MockLogger = {
-  info: ReturnType<typeof vi.fn>;
-  warn: ReturnType<typeof vi.fn>;
-  error: ReturnType<typeof vi.fn>;
+  info: AnyMock;
+  warn: AnyMock;
+  error: AnyMock;
 };
 
 export type MockSecrets = {
-  get: ReturnType<typeof vi.fn>;
+  get: AnyMock;
 };
 
 export type MockCredentials = {
-  get: ReturnType<typeof vi.fn>;
+  get: AnyMock;
 };
 
-/** Every state operation is a `vi.fn()`, so calls can be asserted on. */
+/** Every state operation is a `vi.fn<AnyFn>()`, so calls can be asserted on. */
 export type MockState = {
-  mapping: { get: ReturnType<typeof vi.fn>; put: ReturnType<typeof vi.fn> };
-  cursor: { get: ReturnType<typeof vi.fn>; set: ReturnType<typeof vi.fn> };
-  claim: ReturnType<typeof vi.fn>;
-  digest: { unchanged: ReturnType<typeof vi.fn>; set: ReturnType<typeof vi.fn> };
+  mapping: { get: AnyMock; put: AnyMock };
+  cursor: { get: AnyMock; set: AnyMock };
+  claim: AnyMock;
+  digest: { unchanged: AnyMock; set: AnyMock };
 };
 
 /**
@@ -99,10 +100,10 @@ export function createMockContext(options: CreateMockContextOptions = {}): MockC
   const { state, completeRun } = createMockState(options.state, options.stateError);
 
   const secretsGet = options.secretsError
-    ? vi.fn(async () => {
+    ? vi.fn<AnyFn>(async () => {
         throw options.secretsError;
       })
-    : vi.fn(async (key: string) => {
+    : vi.fn<AnyFn>(async (key: string) => {
         if (options.secrets && key in options.secrets) {
           return options.secrets[key];
         }
@@ -110,10 +111,10 @@ export function createMockContext(options: CreateMockContextOptions = {}): MockC
       });
 
   const credentialsGet = options.credentialsError
-    ? vi.fn(async () => {
+    ? vi.fn<AnyFn>(async () => {
         throw options.credentialsError;
       })
-    : vi.fn(async (id: string) => {
+    : vi.fn<AnyFn>(async (id: string) => {
         if (options.credentials && id in options.credentials) {
           return options.credentials[id];
         }
@@ -123,9 +124,9 @@ export function createMockContext(options: CreateMockContextOptions = {}): MockC
   return {
     signal,
     logger: {
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
+      info: vi.fn<AnyFn>(),
+      warn: vi.fn<AnyFn>(),
+      error: vi.fn<AnyFn>(),
     },
     secrets: {
       get: secretsGet,

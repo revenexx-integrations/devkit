@@ -1,6 +1,7 @@
 import type { ICredential, ICredentialContext, ICredentialResolveResult, ICredentialTestResult } from '@revenexx/integrations-node-sdk';
 import { isOAuthAuthorizeCredential } from '@revenexx/integrations-node-sdk';
 import { vi } from 'vitest';
+import type { AnyFn, AnyMock } from './mock.js';
 
 /**
  * Harness for unit-testing a credential type's `test` / `resolve` / 3-legged
@@ -11,15 +12,15 @@ import { vi } from 'vitest';
  */
 
 export type MockCredentialLogger = {
-  info: ReturnType<typeof vi.fn>;
-  warn: ReturnType<typeof vi.fn>;
-  error: ReturnType<typeof vi.fn>;
+  info: AnyMock;
+  warn: AnyMock;
+  error: AnyMock;
 };
 
 export type MockCredentialContext = ICredentialContext & {
   logger: MockCredentialLogger;
   /** Spy wired to `ctx.persistDurableCreds`; assert `.toHaveBeenCalledWith(...)`. */
-  persistDurableCreds: ReturnType<typeof vi.fn>;
+  persistDurableCreds: AnyMock;
 };
 
 export interface CreateCredentialContextOptions {
@@ -28,13 +29,13 @@ export interface CreateCredentialContextOptions {
 
 export function createCredentialContext(options: CreateCredentialContextOptions = {}): MockCredentialContext {
   const signal = options.signal ?? new AbortController().signal;
-  const persistDurableCreds = vi.fn(async (_durableCreds: Record<string, unknown>) => {});
+  const persistDurableCreds = vi.fn<AnyFn>(async (_durableCreds: Record<string, unknown>) => {});
   return {
     signal,
     logger: {
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
+      info: vi.fn<AnyFn>(),
+      warn: vi.fn<AnyFn>(),
+      error: vi.fn<AnyFn>(),
     },
     persistDurableCreds,
   };
@@ -61,7 +62,7 @@ export interface RunCredentialResolveOptions {
 export interface RunCredentialResolveResult {
   result: ICredentialResolveResult;
   /** Spy wired to `ctx.persistDurableCreds` — assert rotation happened. */
-  persistDurableCreds: ReturnType<typeof vi.fn>;
+  persistDurableCreds: AnyMock;
   /** The context used, for further assertions (logger calls, etc.). */
   ctx: MockCredentialContext;
 }
