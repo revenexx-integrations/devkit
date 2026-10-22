@@ -219,7 +219,8 @@ expect(persistDurableCreds).toHaveBeenCalledWith({ refreshToken: 'RT' });
 stub.restore();
 ```
 
-`vitest` is an optional peer dependency (the harness uses `vi` spies).
+`vitest` is an optional peer dependency (the harness uses `vi` spies); from Vitest 5 on,
+install its `vite` peer alongside.
 
 ## Fidelity caveats
 
