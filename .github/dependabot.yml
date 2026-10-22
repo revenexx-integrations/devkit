@@ -51,9 +51,6 @@ updates:
           - "version-update:semver-major"
           - "version-update:semver-minor"
           - "version-update:semver-patch"
-      # Vitest 5 moves with the devkit test harness. PO-804 lifts this.
-      - dependency-name: "vitest"
-        update-types: ["version-update:semver-major"]
       # The types describe the Node release the packages run on (24), and move
       # with it, not ahead of it.
       - dependency-name: "@types/node"
