@@ -4,7 +4,7 @@ Get a node package rendering in the Cockpit preview.
 
 ## Prerequisites
 
-- **Node.js >= 20.3.0**.
+- **Node.js >= 22.19.0**.
 - An integration node package that exports nodes and/or credentials from `src/index.ts`.
 - Plain public npm access. The preview host pulls `@revenexx/studio-integrations` and
   `@revenexx/studio-shared`, which are published publicly — no private registry or token
