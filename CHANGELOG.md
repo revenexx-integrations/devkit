@@ -1,5 +1,11 @@
 # @revenexx/integrations-node-devkit
 
+## 0.8.3
+
+### Patch Changes
+
+- 506d7bb: The package runs on SDK 2.0.0 and requires Node 22.19 or newer, the floor of the undici 8 that SDK 2.0.0 sends through.
+
 ## 0.8.2
 
 ### Patch Changes
