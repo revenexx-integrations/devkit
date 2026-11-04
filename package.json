@@ -64,7 +64,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
     "@changesets/cli": "^3.0.3",
-    "@revenexx/integrations-node-sdk": ">=1.0.0",
+    "@revenexx/integrations-node-sdk": "^2.0.0",
     "@types/node": "^24.0.0",
     "tsup": "^9.0.0",
     "typescript": "^7.0.2",
@@ -82,7 +82,7 @@
     }
   },
   "engines": {
-    "node": ">=20.3.0"
+    "node": ">=22.19.0"
   },
   "publishConfig": {
     "access": "public",
