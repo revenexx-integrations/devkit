@@ -1,3 +1,6 @@
+import dns from 'node:dns';
+import { syncBuiltinESMExports } from 'node:module';
+import { isIP } from 'node:net';
 import { vi } from 'vitest';
 import type { AnyFn, AnyMock } from './mock.js';
 
@@ -42,21 +45,75 @@ export function buildResponse(init: StubResponseInit): Response {
   return new Response(body, { status: init.status ?? 200, headers });
 }
 
+export interface StubFetchOptions {
+  /**
+   * Answer DNS too, while the stub is active (default `true`). The SDK's
+   * `safeFetch` resolves a request's host through `node:dns/promises` before it
+   * calls `fetch`, to refuse private addresses — so without this, a test whose
+   * `fetch` is stubbed still asks real DNS, and fails offline or on a slow
+   * resolver. With it, every host but `localhost` and an IP literal resolves to
+   * {@link STUB_DNS_ADDRESS}, a public address, so the guard lets the request
+   * through to the stub.
+   *
+   * Pass `false` for a test that checks real resolution, or that installs its
+   * own `lookup` to make a host resolve to a private address.
+   */
+  dns?: boolean;
+}
+
 export interface StubFetchResult {
   /** The `vi.fn<AnyFn>()` installed as `globalThis.fetch` — assert calls on it. */
   fetchMock: AnyMock;
-  /** Restores the previous `globalThis.fetch`. */
+  /** Restores the previous `globalThis.fetch`, and the previous DNS `lookup` where it was replaced. */
   restore(): void;
+}
+
+/**
+ * The address every host but `localhost` and an IP literal resolves to while
+ * {@link stubFetch} answers DNS. Public, so the SDK's SSRF guard lets it through.
+ */
+export const STUB_DNS_ADDRESS = '93.184.215.14';
+
+type PromisesLookup = typeof dns.promises.lookup;
+
+/**
+ * Replaces `lookup` on `node:dns/promises` — the object `require` hands out and,
+ * after `syncBuiltinESMExports()`, the ESM namespace an `import()` of it reads —
+ * and returns the function that puts the previous one back.
+ */
+function stubDnsLookup(): () => void {
+  const previous = dns.promises.lookup;
+  const stubbed = ((hostname: string, options?: unknown) => {
+    if (hostname === 'localhost' || isIP(hostname) !== 0) {
+      return (previous as (h: string, o?: unknown) => Promise<unknown>)(hostname, options);
+    }
+    const address = { address: STUB_DNS_ADDRESS, family: 4 };
+    const all = typeof options === 'object' && options !== null && (options as { all?: unknown }).all === true;
+    return Promise.resolve(all ? [address] : address);
+  }) as PromisesLookup;
+  dns.promises.lookup = stubbed;
+  syncBuiltinESMExports();
+  return () => {
+    // Only undo our own replacement: a lookup somebody installed after this one
+    // is theirs to restore.
+    if (dns.promises.lookup === stubbed) {
+      dns.promises.lookup = previous;
+      syncBuiltinESMExports();
+    }
+  };
 }
 
 /**
  * Replaces `globalThis.fetch` with a `vi.fn<AnyFn>()` driven by `handler`. Pass a
  * static {@link StubResponseInit} to answer every request identically, or a
- * {@link FetchHandler} to branch on url/method. Call `restore()` when done
+ * {@link FetchHandler} to branch on url/method. Unless `options.dns` is `false`,
+ * it answers DNS as well (see {@link StubFetchOptions.dns}), so a request through
+ * the SDK's `safeFetch` never reaches the network. Call `restore()` when done
  * (e.g. in `afterEach`).
  */
-export function stubFetch(handler: FetchHandler | StubResponseInit): StubFetchResult {
+export function stubFetch(handler: FetchHandler | StubResponseInit, options: StubFetchOptions = {}): StubFetchResult {
   const previous = globalThis.fetch;
+  const restoreDns = options.dns === false ? () => {} : stubDnsLookup();
   const resolveInit: FetchHandler = typeof handler === 'function' ? handler : () => handler;
 
   const fetchMock = vi.fn<AnyFn>(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -71,6 +128,7 @@ export function stubFetch(handler: FetchHandler | StubResponseInit): StubFetchRe
     fetchMock,
     restore() {
       globalThis.fetch = previous;
+      restoreDns();
     },
   };
 }

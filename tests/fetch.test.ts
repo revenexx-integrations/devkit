@@ -1,7 +1,11 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { fakeTokenEndpoint, stubFetch } from '../src/testing/index.js';
+import dns from 'node:dns';
+import { syncBuiltinESMExports } from 'node:module';
+import { isIP } from 'node:net';
+import { safeFetch } from '@revenexx/integrations-node-sdk';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fakeTokenEndpoint, STUB_DNS_ADDRESS, stubFetch } from '../src/testing/index.js';
 
-let active: { restore(): void } | undefined;
+let active: ReturnType<typeof stubFetch> | undefined;
 
 afterEach(() => {
   active?.restore();
@@ -38,6 +42,73 @@ describe('stubFetch', () => {
     expect(globalThis.fetch).not.toBe(original);
     stub.restore();
     expect(globalThis.fetch).toBe(original);
+  });
+});
+
+describe('stubFetch and DNS', () => {
+  const realLookup = dns.promises.lookup;
+
+  /** Every lookup but localhost and an IP literal fails, as on a runner with no DNS — the preload from PO-745. */
+  function blockDns(): ReturnType<typeof vi.fn> {
+    const blocked = vi.fn(async (hostname: string, ..._rest: unknown[]) => {
+      // Answered without asking anybody, so the test holds on a runner with no DNS at all.
+      if (hostname === 'localhost' || isIP(hostname) !== 0) return { address: isIP(hostname) ? hostname : '127.0.0.1', family: 4 };
+      throw Object.assign(new Error('DNS blocked'), { code: 'ENOTFOUND' });
+    });
+    dns.promises.lookup = blocked as unknown as typeof dns.promises.lookup;
+    syncBuiltinESMExports();
+    return blocked;
+  }
+
+  afterEach(() => {
+    dns.promises.lookup = realLookup;
+    syncBuiltinESMExports();
+  });
+
+  it('lets a request through safeFetch reach the stub with DNS blocked', async () => {
+    const blocked = blockDns();
+    active = stubFetch({ json: { ok: true } });
+
+    const res = await safeFetch('https://api.vendor.example/v1/things');
+    await expect(res.json()).resolves.toEqual({ ok: true });
+    expect(blocked).not.toHaveBeenCalled();
+  });
+
+  it('answers the ESM namespace an import of node:dns/promises reads', async () => {
+    active = stubFetch({ json: {} });
+    const { lookup } = await import('node:dns/promises');
+
+    await expect(lookup('api.vendor.example', { all: true })).resolves.toEqual([{ address: STUB_DNS_ADDRESS, family: 4 }]);
+    await expect(lookup('api.vendor.example')).resolves.toEqual({ address: STUB_DNS_ADDRESS, family: 4 });
+  });
+
+  it('leaves localhost and an IP literal to the real lookup', async () => {
+    const blocked = blockDns();
+    active = stubFetch({ json: {} });
+
+    await dns.promises.lookup('localhost');
+    await dns.promises.lookup('127.0.0.1');
+    expect(blocked.mock.calls.map(call => call[0])).toEqual(['localhost', '127.0.0.1']);
+  });
+
+  it('calls the real lookup with { dns: false }', async () => {
+    const blocked = blockDns();
+    active = stubFetch({ json: {} }, { dns: false });
+
+    await expect(safeFetch('https://api.vendor.example/v1/things')).rejects.toThrow('DNS blocked');
+    expect(active.fetchMock).not.toHaveBeenCalled();
+    expect(blocked).toHaveBeenCalledWith('api.vendor.example', expect.anything());
+  });
+
+  it('puts the previous lookup back on restore', async () => {
+    const blocked = blockDns();
+    const stub = stubFetch({ json: {} });
+    expect(dns.promises.lookup).not.toBe(blocked);
+
+    stub.restore();
+    expect(dns.promises.lookup).toBe(blocked);
+    const { lookup } = await import('node:dns/promises');
+    expect(lookup).toBe(blocked);
   });
 });
 

@@ -219,6 +219,10 @@ expect(persistDurableCreds).toHaveBeenCalledWith({ refreshToken: 'RT' });
 stub.restore();
 ```
 
+While a `stubFetch` is active, the DNS lookup `safeFetch` makes before every request is
+answered too, so a stubbed suite runs offline; `stubFetch(handler, { dns: false })` leaves
+DNS real. See `docs/testing.md`.
+
 `vitest` is an optional peer dependency (the harness uses `vi` spies); from Vitest 5 on,
 install its `vite` peer alongside.
 
