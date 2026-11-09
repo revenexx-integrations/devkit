@@ -55,8 +55,10 @@ export interface StubFetchOptions {
    * {@link STUB_DNS_ADDRESS}, a public address, so the guard lets the request
    * through to the stub.
    *
-   * Pass `false` for a test that checks real resolution. A `lookup` the test
-   * already replaced with a vitest mock (`vi.spyOn`, `vi.fn`) is left in place
+   * Pass `false` for a test that checks real resolution: this stub then takes
+   * no hold on DNS (another active stub without it still keeps DNS stubbed until
+   * it is restored). A `lookup` the test
+   * already replaced on `node:dns/promises` with a vitest mock is left in place
    * either way, so a test that makes a host resolve to a private address keeps
    * its answer.
    */

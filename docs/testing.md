@@ -61,9 +61,23 @@ the network, failed offline, and went red on a slow resolver (PO-745). So while 
 lets through. `restore()` puts the previous `lookup` back. The guard itself still runs; it
 is the answer it gets that is stubbed.
 
-A `lookup` the test already replaced with a vitest mock — `vi.spyOn(dns, 'lookup')` to
-make a host resolve to a private address, say — is left in place, so that test keeps its
-answer and the guard still refuses. A test that needs real resolution switches the stub off:
+A `lookup` the test already replaced with a vitest mock is left in place, so a test that
+makes a host resolve to a private address keeps its answer and the guard still refuses. Mock
+the promise-based `lookup`, which is the one the guard asks, and sync the ESM namespace the
+SDK reads:
+
+```ts
+import dns from 'node:dns';
+import { syncBuiltinESMExports } from 'node:module';
+
+vi.spyOn(dns.promises, 'lookup').mockResolvedValue([{ address: '10.0.0.7', family: 4 }] as never);
+syncBuiltinESMExports();
+const stub = stubFetch(handler); // the mock stays; the guard sees 10.0.0.7
+```
+
+A test that needs real resolution passes `{ dns: false }`. That stub then takes no hold on
+DNS; while another stub without it is still active, DNS stays stubbed until that one is
+restored too.
 
 ```ts
 const stub = stubFetch(handler, { dns: false });
