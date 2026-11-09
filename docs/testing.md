@@ -14,7 +14,7 @@ required peer of vitest rather than a dependency of it; install it alongside.
 | `createMockContext` | An `INodeContext` for calling `node.execute`. |
 | `createAuthorContext` | An author-time context for `loadOptions`, `resolveConfigSchema`, `resolveOutputs`. |
 | `runCredentialResolve` | Driving a credential's `resolve`, including durable-credential rotation. |
-| `stubFetch` | Replacing global `fetch` for the duration of a test. |
+| `stubFetch` | Replacing global `fetch` — and the DNS lookup `safeFetch` makes before it — for the duration of a test. |
 | `fakeTokenEndpoint` | A canned OAuth token endpoint to hand to `stubFetch`. |
 | `AnyMock`, `AnyFn` | Typing a spy the harness hands out, e.g. a variable holding `ctx.secrets.get`. |
 
@@ -50,6 +50,45 @@ stub.restore();
 
 Always call `stub.restore()` — ideally in an `afterEach` — so a stubbed `fetch` cannot
 leak into the next test.
+
+## A stubbed request asks no DNS either
+
+The SDK's `safeFetch` resolves a request's host before it calls `fetch`, so its SSRF guard
+can refuse a private address. Stubbing `fetch` alone left that lookup real: a suite needed
+the network, failed offline, and went red on a slow resolver (PO-745). So while a
+`stubFetch` is active it also replaces `lookup` on `node:dns/promises`, and every host but
+`localhost` and an IP literal resolves to `STUB_DNS_ADDRESS`, a public address the guard
+lets through. `restore()` puts the previous `lookup` back. The guard itself still runs; it
+is the answer it gets that is stubbed.
+
+A `lookup` the test already replaced with a vitest mock is left in place, so a test that
+makes a host resolve to a private address keeps its answer and the guard still refuses. Mock
+the promise-based `lookup`, which is the one the guard asks, and sync the ESM namespace the
+SDK reads:
+
+```ts
+import dns from 'node:dns';
+import { syncBuiltinESMExports } from 'node:module';
+
+vi.spyOn(dns.promises, 'lookup').mockResolvedValue([{ address: '10.0.0.7', family: 4 }] as never);
+syncBuiltinESMExports();
+const stub = stubFetch(handler); // the mock stays; the guard sees 10.0.0.7
+```
+
+A test that needs real resolution passes `{ dns: false }`. That stub then takes no hold on
+DNS; while another stub without it is still active, DNS stays stubbed until that one is
+restored too.
+
+```ts
+const stub = stubFetch(handler, { dns: false });
+```
+
+Two stubs held at once share one replacement, and the previous `lookup` comes back when
+the last of them is restored, in whatever order.
+
+Only the promise-based `lookup` is replaced, which is the one the guard asks. The
+callback-based `dns.lookup` that a real socket uses is not, and a stubbed `fetch` opens no
+socket.
 
 ## What a node remembers between runs
 
