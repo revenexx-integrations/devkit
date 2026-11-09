@@ -55,8 +55,10 @@ export interface StubFetchOptions {
    * {@link STUB_DNS_ADDRESS}, a public address, so the guard lets the request
    * through to the stub.
    *
-   * Pass `false` for a test that checks real resolution, or that installs its
-   * own `lookup` to make a host resolve to a private address.
+   * Pass `false` for a test that checks real resolution. A `lookup` the test
+   * already replaced with a vitest mock (`vi.spyOn`, `vi.fn`) is left in place
+   * either way, so a test that makes a host resolve to a private address keeps
+   * its answer.
    */
   dns?: boolean;
 }
@@ -71,35 +73,71 @@ export interface StubFetchResult {
 /**
  * The address every host but `localhost` and an IP literal resolves to while
  * {@link stubFetch} answers DNS. Public, so the SDK's SSRF guard lets it through.
+ * A lookup that asks for IPv6 only (`family: 6`) gets {@link STUB_DNS_ADDRESS_V6}.
  */
 export const STUB_DNS_ADDRESS = '93.184.215.14';
+
+/** The IPv6 counterpart of {@link STUB_DNS_ADDRESS}, also public. */
+export const STUB_DNS_ADDRESS_V6 = '2606:2800:21f:cb07:6820:80da:af6b:8b2c';
 
 type PromisesLookup = typeof dns.promises.lookup;
 
 /**
+ * The one DNS stub every active {@link stubFetch} shares, and how many of them
+ * hold it. Counted rather than stacked, so restores in any order put the
+ * original back once the last holder is gone.
+ */
+let sharedDnsStub: { original: PromisesLookup; stubbed: PromisesLookup; holders: number } | undefined;
+
+function stubbedAnswer(options: unknown): { address: string; family: number } {
+  const family = typeof options === 'number' ? options : typeof options === 'object' && options !== null ? (options as { family?: unknown }).family : undefined;
+  return family === 6 || family === 'IPv6' ? { address: STUB_DNS_ADDRESS_V6, family: 6 } : { address: STUB_DNS_ADDRESS, family: 4 };
+}
+
+function setLookup(lookup: PromisesLookup): void {
+  dns.promises.lookup = lookup;
+  syncBuiltinESMExports();
+}
+
+/**
  * Replaces `lookup` on `node:dns/promises` — the object `require` hands out and,
  * after `syncBuiltinESMExports()`, the ESM namespace an `import()` of it reads —
- * and returns the function that puts the previous one back.
+ * and returns the function that releases this hold on it.
+ *
+ * A lookup that is already a vitest mock is left alone: the test installed it to
+ * answer DNS itself, often with a private address, and stubbing over it would
+ * quietly make the SSRF guard pass.
  */
 function stubDnsLookup(): () => void {
-  const previous = dns.promises.lookup;
-  const stubbed = ((hostname: string, options?: unknown) => {
-    if (hostname === 'localhost' || isIP(hostname) !== 0) {
-      return (previous as (h: string, o?: unknown) => Promise<unknown>)(hostname, options);
-    }
-    const address = { address: STUB_DNS_ADDRESS, family: 4 };
-    const all = typeof options === 'object' && options !== null && (options as { all?: unknown }).all === true;
-    return Promise.resolve(all ? [address] : address);
-  }) as PromisesLookup;
-  dns.promises.lookup = stubbed;
-  syncBuiltinESMExports();
+  const current = dns.promises.lookup;
+  if (sharedDnsStub !== undefined && current === sharedDnsStub.stubbed) {
+    sharedDnsStub.holders += 1;
+  } else if (vi.isMockFunction(current)) {
+    return () => {};
+  } else {
+    const original = current;
+    const stubbed = ((hostname: string, options?: unknown) => {
+      if (hostname === 'localhost' || isIP(hostname) !== 0) {
+        return (original as (h: string, o?: unknown) => Promise<unknown>)(hostname, options);
+      }
+      const address = stubbedAnswer(options);
+      const all = typeof options === 'object' && options !== null && (options as { all?: unknown }).all === true;
+      return Promise.resolve(all ? [address] : address);
+    }) as PromisesLookup;
+    sharedDnsStub = { original, stubbed, holders: 1 };
+    setLookup(stubbed);
+  }
+  const held = sharedDnsStub;
+  let released = false;
   return () => {
-    // Only undo our own replacement: a lookup somebody installed after this one
-    // is theirs to restore.
-    if (dns.promises.lookup === stubbed) {
-      dns.promises.lookup = previous;
-      syncBuiltinESMExports();
-    }
+    if (released || held === undefined) return;
+    released = true;
+    held.holders -= 1;
+    if (held.holders > 0) return;
+    if (sharedDnsStub === held) sharedDnsStub = undefined;
+    // Only undo our own replacement: a lookup somebody installed over it is
+    // theirs to restore.
+    if (dns.promises.lookup === held.stubbed) setLookup(held.original);
   };
 }
 

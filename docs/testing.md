@@ -61,12 +61,16 @@ the network, failed offline, and went red on a slow resolver (PO-745). So while 
 lets through. `restore()` puts the previous `lookup` back. The guard itself still runs; it
 is the answer it gets that is stubbed.
 
-A test that checks real resolution, or installs its own `lookup` to make a host resolve to
-a private address, switches this off:
+A `lookup` the test already replaced with a vitest mock — `vi.spyOn(dns, 'lookup')` to
+make a host resolve to a private address, say — is left in place, so that test keeps its
+answer and the guard still refuses. A test that needs real resolution switches the stub off:
 
 ```ts
 const stub = stubFetch(handler, { dns: false });
 ```
+
+Two stubs held at once share one replacement, and the previous `lookup` comes back when
+the last of them is restored, in whatever order.
 
 Only the promise-based `lookup` is replaced, which is the one the guard asks. The
 callback-based `dns.lookup` that a real socket uses is not, and a stubbed `fetch` opens no
