@@ -37,6 +37,17 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The preview installs preview-host/ with a plain `npm install` on every
+      # start, so a dependency conflict there breaks `npm run preview` in every
+      # node package (IN-87). Install it the same way, from a clean directory,
+      # so the conflict goes red here before it is released.
+      - name: Install the preview host
+        run: |
+          host="$(mktemp -d)"
+          cp preview-host/package.json "$host/"
+          cd "$host"
+          npm install --no-audit --no-fund
+
   changeset:
     # Enforce that every PR carries a changeset (hard gate; add it as a required
     # status check in .github/rulesets/main.json). Use `npx changeset --empty`
